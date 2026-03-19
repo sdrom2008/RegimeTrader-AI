@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2 as calculate_features
-from regime_trader_ai_product.config_v2 import (
+from regime_trader_ai_product.config import (
     ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD,
     CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
     STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR

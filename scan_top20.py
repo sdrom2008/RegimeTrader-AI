@@ -2,7 +2,7 @@
 import os, sys, ccxt, pandas as pd, pickle
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2
-from regime_trader_ai_product.config_v2 import ADX_STRONG_THRESHOLD, CONFIDENCE_THRESHOLD
+from regime_trader_ai_product.config import ADX_STRONG_THRESHOLD, CONFIDENCE_THRESHOLD
 
 model = pickle.load(open('regime_model_v2_quantile.pkl','rb'))
 features = ['ADX','+DI','-DI','DI_diff','MACD_hist','MACD_hist_cross_up','RSI','ATR','Price_vs_EMA200','Volume_Change_Ratio','EMA_50','EMA_200','ADX_strong','ADX_weak','+DI_cross_above_-DI','-DI_cross_above_+DI','MACD_hist_positive','Price_std_20','ATR_ratio','Drawdown_20','RSI_dev']

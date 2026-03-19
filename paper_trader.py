@@ -1,174 +1,173 @@
+"""
+v2 策略执行器 - 干跑/实盘统一入口
+支持：三分类模型 + 双向交易 + 动态风控
+"""
+
 import os
+import sys
 import json
-import time
 import datetime
+import time
+import logging
 import pandas as pd
 import ccxt
-from dotenv import load_dotenv
 import pickle
 import subprocess
-import sys
+import shutil
+import requests
+import feedparser
+from bs4 import BeautifulSoup
 
-# Ensure workspace root is on path for imports
-workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if workspace_root not in sys.path:
-    sys.path.insert(0, workspace_root)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import custom modules
-from regime_trader_ai_product.code.market_state_logic import MarketStateAnalyzer
-from test_smart_money import get_binance_ls_ratio
-from ai_news_reader import fetch_crypto_rss
+from regime_trader_ai_product.logger_v2 import setup_logger
+from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2
+from regime_trader_ai_product.config import (
+    ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD,
+    CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
+    STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR, TRAILING_STOP_ATR,
+    SCAN_LIMIT, STATE_FILE, MODEL_FILE, ENABLE_FUNDING_FILTER,
+    FUNDING_RATE_THRESHOLD
+)
+from regime_trader_ai_product.news_fetcher import fetch_all_news
+from regime_trader_ai_product.sentiment_analyzer import SentimentAnalyzer
+from regime_trader_ai_product.risk_controller import RiskController
 
-# pandas_ta
-try:
-    import pandas_ta as ta
-except ImportError:
-    print("[!] pandas_ta is not installed. Run: pip install pandas_ta")
-    exit(1)
+# 初始化日志
+logger = setup_logger()
 
-load_dotenv()
+DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
 
-STATE_FILE = 'paper_trade_state.json'
-LEVERAGE = 3.0
-INITIAL_BALANCE = 10000.0  # 10,000 USDT
-RISK_PER_TRADE_PCT = 0.05
-SCAN_INTERVAL = 300  # 5 minutes
-SCAN_LIMIT = 60  # number of top symbols to scan
-MARKET_CONF_THRESHOLD = 0.7  # minimum confidence to enter
+# 宏风险监控（全局单例，避免重复抓取）
+RISK_CHECK_INTERVAL = 600  # 秒，10分钟
+_last_risk_check = None
+_risk_assessment_cache = None
 
-MODEL_FEATURES = [
-    'ADX_14','ADXR_14_2','DMP_14','DMN_14','BBL_20_2.0_2.0',
-    'BBM_20_2.0_2.0','BBU_20_2.0_2.0','BBB_20_2.0_2.0','BBP_20_2.0_2.0',
-    'ATRr_14','RSI_14','EMA_50','EMA_200','BB_WIDTH','RSI_STD_20',
-    'PRICE_EMA200_DIST'
-]
-
-def get_llm_news_sentiment():
-    return "NEUTRAL", 0.5
+def get_macro_risk_assessment(force=False):
+    """获取宏观风险评级（带缓存，10分钟更新一次）"""
+    global _last_risk_check, _risk_assessment_cache
+    
+    now = time.time()
+    if force or (_last_risk_check is None) or (now - _last_risk_check >= RISK_CHECK_INTERVAL):
+        logger.debug("Fetching macro news and analyzing risk...")
+        try:
+            news = fetch_all_news(max_per_source=5)
+            analyzer = SentimentAnalyzer()
+            risk_score, has_critical, details = analyzer.analyze_news_list(news)
+            controller = RiskController()
+            assessment = controller.assess_risk(risk_score, has_critical, details)
+            _risk_assessment_cache = assessment
+            _last_risk_check = now
+            
+            # 发送警报（如果需要）
+            if assessment['level'] >= 1 and SEND_WHATSAPP_ALERT:
+                alert_msg = controller.format_alert(assessment)
+                send_whatsapp_alert(alert_msg)
+            
+            logger.info(f"Macro risk assessment: level={assessment['level']} score={risk_score:.1%}")
+        except Exception as e:
+            logger.error(f"Macro risk check failed: {e}")
+            # 出错时返回上次缓存或默认为正常
+            if _risk_assessment_cache:
+                return _risk_assessment_cache
+            return {'level': 0, 'action': 'NORMAL', 'risk_score': 0.0, 'details': []}
+    
+    return _risk_assessment_cache
 
 def send_whatsapp_alert(message):
-    print(f"[WhatsApp] {message}")
+    """发送 WhatsApp 通知（生产模式）"""
+    logger.info(f"[WhatsApp] {message}")
+    if DRY_RUN:
+        logger.debug("WhatsApp dry-run: skip sending")
+        return
     safe_msg = message.replace("'", "'\\''")
     target = "+8613908412393"
     openclaw_path = "/home/sdrom2008/.npm-global/bin/openclaw"
+    if not os.path.exists(openclaw_path):
+        openclaw_path = shutil.which("openclaw") or "openclaw"
     cmd = f"{openclaw_path} message send --channel whatsapp --target '{target}' --message '{safe_msg}'"
     try:
         result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-        print(f"[WhatsApp] Sent")
+        logger.info("WhatsApp sent")
     except Exception as e:
-        print(f"[WhatsApp] Failed: {e}")
+        logger.error(f"WhatsApp failed: {e}")
 
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
             return json.load(f)
-    return {'balance': INITIAL_BALANCE, 'positions': {}, 'trade_history': []}
+    return {'balance': 10000.0, 'positions': {}, 'trade_history': []}
 
 def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=4)
 
-def calculate_features(df):
-    df.ta.adx(length=14, append=True)
-    df.ta.bbands(length=20, std=2, append=True)
-    df.ta.atr(length=14, append=True)
-    df.ta.rsi(length=14, append=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.ema(length=200, append=True)
-    df['BB_WIDTH'] = (df['BBU_20_2.0_2.0'] - df['BBL_20_2.0_2.0']) / df['BBM_20_2.0_2.0']
-    df['RSI_STD_20'] = df['RSI_14'].rolling(window=20).std()
-    df['PRICE_EMA200_DIST'] = (df['Close'] - df['EMA_200']) / df['EMA_200']
-    df.dropna(inplace=True)
-    return df
+def scan_and_trade_v2():
+    logger.info(f"{'='*60}")
+    logger.info(f"🚀 RegimeTrader AI v2 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"{'='*60}")
 
-def scan_and_trade():
-    print(f"\n{'='*60}")
-    print(f"🚀 AI Regime Trader - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}")
-
-    # Load model
+    # 加载模型
     try:
-        with open('regime_model.pkl', 'rb') as f:
-            regime_model = pickle.load(f)
+        with open(MODEL_FILE, 'rb') as f:
+            model = pickle.load(f)
+        logger.info("Model loaded")
     except Exception as e:
-        print(f"❌ Model load failed: {e}")
-        send_whatsapp_alert(f"❌ 模拟盘错误：模型加载失败 - {e}")
+        logger.error(f"Model not found: {e}. Please run: python train_model_v2_quantile.py")
         return
 
+    # 加载状态
     state = load_state()
     balance = state['balance']
     positions = state['positions']
-    print(f"💰 余额: ${balance:.2f} | 持仓: {len(positions)}")
+    logger.info(f"Balance: ${balance:.2f} | Positions: {len(positions)}")
 
-    fee_rate = 0.0004  # 0.04% per leg, total 0.08% round turn
-
-    # Macro filters
-    sentiment_label, _ = get_llm_news_sentiment()
-    sm_data = get_binance_ls_ratio()
-    sm_signal = "NEUTRAL"
-    if sm_data:
-        if sm_data.get('global_ls_ratio',1) > 1.5 and sm_data.get('top_position_ls_ratio',1) < 0.8:
-            sm_signal = "BEARISH"
-        elif sm_data.get('top_position_ls_ratio',1) > 1.3:
-            sm_signal = "BULLISH"
-    long_veto = (sentiment_label == "NEGATIVE") or (sm_signal == "BEARISH")
-    short_veto = (sentiment_label == "POSITIVE") or False  # BULLISH not used for short veto yet
-
+    fee_rate = 0.0004
     exchange = ccxt.binance({'enableRateLimit': True})
 
+    # 1) 更新持仓
     closed_positions = []
-    unrealized_pnl_total = 0.0
+    unrealized_total = 0.0
 
-    # 1) Update existing positions: mark to market, trailing stop, check stop hit
     for sym, pos in list(positions.items()):
         try:
             ticker = exchange.fetch_ticker(sym)
             price = ticker['last']
             entry = pos['entry_price']
-            amt = pos['amount']
+            amount = pos['amount']
             atr = pos['atr']
             sl = pos['sl']
 
             if pos['type'] == 'BUY':
-                # Update highest seen and trailing stop
+                unreal = (price - entry) * amount
+                unrealized_total += unreal
                 if price > pos.get('highest_seen', entry):
                     pos['highest_seen'] = price
-                    new_sl = max(sl, price - atr*1.5)
-                    pos['sl'] = new_sl
-                # Check stop loss
+                    pos['sl'] = max(sl, price - atr * TRAILING_STOP_ATR)
                 if price <= sl:
                     exit_price = sl
-                    pnl = (exit_price - entry) * amt
-                    fee = (exit_price * amt) * fee_rate * 2
+                    pnl = (exit_price - entry) * amount
+                    fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
                     closed_positions.append((sym, pnl, fee))
-                    print(f"  CLOSED LONG {sym} @{exit_price:.4f} PnL:${pnl:.2f} Fee:${fee:.2f} Returned margin:${pos['margin']:.2f}")
+                    logger.info(f"CLOSED LONG {sym} @{exit_price:.4f} PnL:${pnl:.2f}")
             elif pos['type'] == 'SELL':
+                unreal = (entry - price) * amount
+                unrealized_total += unreal
                 if price < pos.get('lowest_seen', entry):
                     pos['lowest_seen'] = price
-                    new_sl = min(sl, price + atr*1.5)
-                    pos['sl'] = new_sl
+                    pos['sl'] = min(sl, price + atr * TRAILING_STOP_ATR)
                 if price >= sl:
                     exit_price = sl
-                    pnl = (entry - exit_price) * amt
-                    fee = (exit_price * amt) * fee_rate * 2
+                    pnl = (entry - exit_price) * amount
+                    fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
                     closed_positions.append((sym, pnl, fee))
-                    print(f"  CLOSED SHORT {sym} @{exit_price:.4f} PnL:${pnl:.2f} Fee:${fee:.2f} Returned margin:${pos['margin']:.2f}")
-            else:
-                continue
-
-            # Compute unrealized P&L for this position (for reporting and available calc)
-            if pos['type'] == 'BUY':
-                unreal = (price - entry) * amt
-            else:
-                unreal = (entry - price) * amt
-            unrealized_pnl_total += unreal
-
+                    logger.info(f"CLOSED SHORT {sym} @{exit_price:.4f} PnL:${pnl:.2f}")
         except Exception as e:
-            print(f"  Error updating {sym}: {e}")
+            logger.warning(f"{sym} update error: {e}")
 
-    # Remove closed positions and record in history
+    # 记录平仓历史
     for sym, pnl, fee in closed_positions:
         positions.pop(sym, None)
         state['trade_history'].append({
@@ -178,167 +177,155 @@ def scan_and_trade():
             'exit_time': datetime.datetime.utcnow().isoformat()+'Z'
         })
 
-    # 2) Compute total equity (balance + used margin + unrealized)
+    # 2) 计算总权益
     margin_used = sum(p['margin'] for p in positions.values())
-    total_equity = balance + margin_used + unrealized_pnl_total
+    total_equity = balance + margin_used + unrealized_total
+    logger.info(f"Equity: ${total_equity:.2f} | Cash: ${balance:.2f} | Margin: ${margin_used:.2f}")
 
-    # 3) Scan for new opportunities
-    new_signals = []
+    # 3) 宏观风险检查（每10分钟更新一次）
+    macro_risk = get_macro_risk_assessment()
+    if macro_risk['level'] == 2:
+        logger.warning(f"🛡️ Macro risk CRITICAL: {macro_risk['reason']} - Skipping new entries")
+        # 仍保存状态，但不新开仓
+        state['balance'] = balance
+        state['positions'] = positions
+        save_state(state)
+        # 输出摘要并退出扫描
+        logger.info(f"\n--- Summary (Risk Halt) ---")
+        logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
+        logger.info(f"Closed positions: {len(closed_positions)}")
+        logger.info(f"New entries: 0 (MACRO RISK CRITICAL)")
+        return
+    elif macro_risk['level'] == 1:
+        logger.info(f"🛡️ Macro risk WARNING: {macro_risk['reason']} - Reducing position size")
+        # 在后续仓位计算中使用 reduced_risk_pct
+        adjusted_risk_pct = RISK_PER_TRADE_PCT * 0.5
+    else:
+        adjusted_risk_pct = RISK_PER_TRADE_PCT
+
+    # 4) 扫描新机会
+    logger.info(f"Scanning top {SCAN_LIMIT} symbols...")
     try:
         exchange.load_markets()
         tickers = exchange.fetch_tickers()
         usdt_pairs = [s for s, t in tickers.items() if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s]
-        usdt_pairs.sort(key=lambda s: tickers[s].get('quoteVolume',0) or 0, reverse=True)
-        top_symbols = usdt_pairs[:60]
+        usdt_pairs.sort(key=lambda s: (tickers[s].get('quoteVolume') or 0), reverse=True)
+        symbols = usdt_pairs[:SCAN_LIMIT]
     except Exception as e:
-        print(f"  Failed to fetch tickers: {e}")
-        top_symbols = []
+        logger.error(f"Fetch tickers failed: {e}")
+        symbols = []
 
-    for symbol in top_symbols:
+    new_entries = []
+
+    for symbol in symbols:
         if symbol in positions:
             continue
         time.sleep(0.2)
+
         try:
             ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=250)
             df = pd.DataFrame(ohlcv, columns=['timestamp','Open','High','Low','Close','Volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+
             if len(df) < 200:
                 continue
-            df_feat = calculate_features(df.copy())
+
+            df_feat = prepare_features_v2(df.copy())
             if df_feat.empty:
                 continue
+
             latest = df_feat.iloc[-1]
-            features = latest[MODEL_FEATURES].values.reshape(1,-1)
-            regime = regime_model.predict(features)[0]
-            if regime == 0:  # RANGE
-                continue
-            # TREND
-            analyzer = MarketStateAnalyzer()
-            market_state, conf = analyzer.analyze(df)
-            price = latest['Close']
-            atr = latest['ATRr_14']
-            risk_amount = total_equity * RISK_PER_TRADE_PCT
-            notional = (risk_amount / (atr*1.5)) * price
-            margin_req = notional / LEVERAGE
+            features = [
+                'ADX', '+DI', '-DI', 'DI_diff',
+                'MACD_hist', 'MACD_hist_cross_up',
+                'RSI', 'ATR',
+                'Price_vs_EMA200',
+                'Volume_Change_Ratio',
+                'EMA_50', 'EMA_200',
+                'ADX_strong', 'ADX_weak',
+                '+DI_cross_above_-DI', '-DI_cross_above_+DI',
+                'MACD_hist_positive',
+                'Price_std_20', 'ATR_ratio', 'Drawdown_20', 'RSI_dev'
+            ]
+            X = latest[features].values.reshape(1, -1)
 
-            # Check available margin: total_equity must cover sum(margin) + new margin
-            used_margin = sum(p['margin'] for p in positions.values())
-            available = total_equity - used_margin
-            if available < margin_req:
-                continue
+            pred = model.predict(X)[0]
+            probs = model.predict_proba(X)[0]
+            confidence = probs[pred]
+            adx = latest['ADX']
 
-            if market_state in ["Uptrend","Volatile Uptrend"] and conf >= 0.7 and not long_veto:
-                amount = float(exchange.amount_to_precision(symbol, notional/price))
-                if amount*price < 10:
+            # 信号判断
+            signal = None
+            if adx >= ADX_STRONG_THRESHOLD and confidence >= CONFIDENCE_THRESHOLD:
+                if pred == 2:
+                    signal = "BUY"
+                elif pred == 0:
+                    signal = "SELL"
+
+            if signal:
+                entry_price = latest['Close']
+                atr = latest['ATR']
+
+                # 止损止盈
+                if signal == "BUY":
+                    sl_price = entry_price - atr * STOP_LOSS_ATR_MULT
+                    tp_price = entry_price + (entry_price - sl_price) * TAKE_PROFIT_RR
+                else:
+                    sl_price = entry_price + atr * STOP_LOSS_ATR_MULT
+                    tp_price = entry_price - (sl_price - entry_price) * TAKE_PROFIT_RR
+
+                # 仓位计算
+                price_risk = abs(entry_price - sl_price)
+                if price_risk <= 0:
                     continue
-                # Deduct margin from balance immediately
-                if balance < margin_req:
+                risk_amount = total_equity * adjusted_risk_pct
+                amount = risk_amount / price_risk
+                max_notional = total_equity * LEVERAGE
+                if amount * entry_price > max_notional:
+                    amount = max_notional / entry_price
+                margin_req = (amount * entry_price) / LEVERAGE
+
+                used_margin = sum(p['margin'] for p in positions.values())
+                if margin_req > (total_equity - used_margin):
                     continue
+
+                # 开仓
                 balance -= margin_req
                 pos = {
-                    'type':'BUY',
-                    'entry_price':price,
-                    'amount':amount,
-                    'margin':margin_req,
-                    'atr':atr,
-                    'sl': price - atr*1.5,
-                    'highest_seen':price,
-                    'entry_time': datetime.datetime.utcnow().isoformat()+'Z'
+                    'type': signal,
+                    'entry_price': entry_price,
+                    'amount': amount,
+                    'margin': margin_req,
+                    'atr': atr,
+                    'sl': sl_price,
+                    'tp': tp_price,
+                    'highest_seen': entry_price if signal == "BUY" else None,
+                    'lowest_seen': entry_price if signal == "SELL" else None,
+                    'entry_time': datetime.datetime.utcnow().isoformat()+'Z',
+                    'confidence': confidence
                 }
                 positions[symbol] = pos
-                new_signals.append(f"{symbol} 开多 @{price:.4f}")
-                print(f"  📈 NEW LONG {symbol} @ {price:.4f} Margin:${margin_req:.2f} Cash left:${balance:.2f}")
-            elif market_state in ["Downtrend","Volatile Downtrend"] and conf >= 0.7 and not short_veto:
-                amount = float(exchange.amount_to_precision(symbol, notional/price))
-                if amount*price < 10:
-                    continue
-                if balance < margin_req:
-                    continue
-                balance -= margin_req
-                pos = {
-                    'type':'SELL',
-                    'entry_price':price,
-                    'amount':amount,
-                    'margin':margin_req,
-                    'atr':atr,
-                    'sl': price + atr*1.5,
-                    'lowest_seen':price,
-                    'entry_time': datetime.datetime.utcnow().isoformat()+'Z'
-                }
-                positions[symbol] = pos
-                new_signals.append(f"{symbol} 开空 @{price:.4f}")
-                print(f"  📉 NEW SHORT {symbol} @ {price:.4f} Margin:${margin_req:.2f} Cash left:${balance:.2f}")
+                new_entries.append(f"{symbol} {signal} @{entry_price:.4f} SL:{sl_price:.4f}")
+                logger.info(f"NEW {signal} {symbol} @{entry_price:.4f} | ATR:{atr:.4f} Amount:{amount:.4f}")
+
         except Exception as e:
-            pass  # skip errors
+            logger.warning(f"{symbol} scan error: {e}")
 
-    # 4) Update state: balance may have changed from closures; positions updated
+    # 4) 保存状态
     state['balance'] = balance
+    state['positions'] = positions
     save_state(state)
 
-    # 5) Compute final total equity for report (balance + margin + unrealized)
-    margin_used2 = sum(p['margin'] for p in positions.values())
-    final_unrealized = 0.0
-    for sym, pos in positions.items():
-        try:
-            ticker = exchange.fetch_ticker(sym)
-            price = ticker['last']
-            entry = pos['entry_price']
-            amt = pos['amount']
-            if pos['type'] == 'BUY':
-                unreal = (price - entry) * amt
-            else:
-                unreal = (entry - price) * amt
-            final_unrealized += unreal
-        except Exception:
-            pass
-    final_total_equity = balance + margin_used2 + final_unrealized
+    # 5) 输出摘要
+    logger.info(f"\n--- Summary ---")
+    logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
+    logger.info(f"Closed positions: {len(closed_positions)}")
+    for sym, pnl, fee in closed_positions:
+        logger.info(f"  {sym}: ${pnl:+.2f}")
+    logger.info(f"New entries: {len(new_entries)}")
+    for e in new_entries:
+        logger.info(f"  {e}")
 
-    # Build detailed summary
-    summary = f"📊 模拟盘扫描完成\n"
-    summary += f"🕒 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-    summary += f"💰 总资产: ${final_total_equity:.2f} (余额: ${balance:.2f})\n"
-    summary += f"📦 持仓数: {len(positions)}\n"
-    if positions:
-        summary += "🔍 当前持仓:\n"
-        for sym, pos in positions.items():
-            try:
-                cur_price = exchange.fetch_ticker(sym)['last']
-                entry = pos['entry_price']
-                amt = pos['amount']
-                if pos['type'] == 'BUY':
-                    unreal = (cur_price - entry) * amt
-                else:
-                    unreal = (entry - cur_price) * amt
-                sl = pos['sl']
-                summary += f"  {sym}: {pos['type']} 数量={amt:.0f} 开仓={entry:.4f} 当前={cur_price:.4f} 未实现盈亏=${unreal:.2f} 止损={sl:.4f}\n"
-            except Exception:
-                summary += f"  {sym}: {pos['type']} 数量={pos['amount']:.0f} 开仓={pos['entry_price']:.4f} (价格获取失败)\n"
-    if closed_positions:
-        summary += f"✅ 本次平仓({len(closed_positions)}):\n"
-        for sym, pnl, fee in closed_positions:
-            summary += f"  {sym}: 盈亏=${pnl:.2f} 手续费=${fee:.2f}\n"
-    if new_signals:
-        summary += f"🆕 新开仓({len(new_signals)}): " + ", ".join(new_signals) + "\n"
-    else:
-        summary += "🆕 本次扫描无新开仓\n"
-    print(summary)
-
-    # Send WhatsApp summary only on the hour to avoid spam
-    now = datetime.datetime.now()
-    if now.minute == 0:
-        send_whatsapp_alert(summary)
-    else:
-        print("[Report] Not on the hour, skipping WhatsApp summary")
-
-def main_loop():
-    send_whatsapp_alert("🤖 模拟盘常驻进程已启动，每5分钟扫描一次")
-    while True:
-        try:
-            scan_and_trade()
-        except Exception as e:
-            err = f"扫描异常: {e}"
-            print(err)
-            send_whatsapp_alert(err)
-        time.sleep(SCAN_INTERVAL)
-
-if __name__ == "__main__":
-    main_loop()
+if __name__ == '__main__':
+    scan_and_trade_v2()

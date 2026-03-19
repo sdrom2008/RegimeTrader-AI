@@ -40,3 +40,8 @@ MIN_MARKET_CAP = 100_000_000   # 最小市值（USDT，可选）
 MODEL_FILE = 'regime_model_v2_quantile.pkl'
 STATE_FILE = 'paper_trade_state_v2.json'  # v2 独立状态文件
 LOG_FILE = 'logs/v2_trader.log'
+
+# ========================
+# 执行器参数
+# ========================
+SCAN_INTERVAL = 300  # 扫描间隔（秒），默认5分钟
