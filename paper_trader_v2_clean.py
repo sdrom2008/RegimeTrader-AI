@@ -14,6 +14,9 @@ import ccxt
 import pickle
 import subprocess
 import shutil
+import requests
+import feedparser
+from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,11 +29,50 @@ from regime_trader_ai_product.config_v2 import (
     SCAN_LIMIT, STATE_FILE, MODEL_FILE, ENABLE_FUNDING_FILTER,
     FUNDING_RATE_THRESHOLD
 )
+from regime_trader_ai_product.news_fetcher import fetch_all_news
+from regime_trader_ai_product.sentiment_analyzer import SentimentAnalyzer
+from regime_trader_ai_product.risk_controller import RiskController
 
 # 初始化日志
 logger = setup_logger()
 
 DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
+
+# 宏风险监控（全局单例，避免重复抓取）
+RISK_CHECK_INTERVAL = 600  # 秒，10分钟
+_last_risk_check = None
+_risk_assessment_cache = None
+
+def get_macro_risk_assessment(force=False):
+    """获取宏观风险评级（带缓存，10分钟更新一次）"""
+    global _last_risk_check, _risk_assessment_cache
+    
+    now = time.time()
+    if force or (_last_risk_check is None) or (now - _last_risk_check >= RISK_CHECK_INTERVAL):
+        logger.debug("Fetching macro news and analyzing risk...")
+        try:
+            news = fetch_all_news(max_per_source=5)
+            analyzer = SentimentAnalyzer()
+            risk_score, has_critical, details = analyzer.analyze_news_list(news)
+            controller = RiskController()
+            assessment = controller.assess_risk(risk_score, has_critical, details)
+            _risk_assessment_cache = assessment
+            _last_risk_check = now
+            
+            # 发送警报（如果需要）
+            if assessment['level'] >= 1 and SEND_WHATSAPP_ALERT:
+                alert_msg = controller.format_alert(assessment)
+                send_whatsapp_alert(alert_msg)
+            
+            logger.info(f"Macro risk assessment: level={assessment['level']} score={risk_score:.1%}")
+        except Exception as e:
+            logger.error(f"Macro risk check failed: {e}")
+            # 出错时返回上次缓存或默认为正常
+            if _risk_assessment_cache:
+                return _risk_assessment_cache
+            return {'level': 0, 'action': 'NORMAL', 'risk_score': 0.0, 'details': []}
+    
+    return _risk_assessment_cache
 
 def send_whatsapp_alert(message):
     """发送 WhatsApp 通知（生产模式）"""
@@ -140,7 +182,28 @@ def scan_and_trade_v2():
     total_equity = balance + margin_used + unrealized_total
     logger.info(f"Equity: ${total_equity:.2f} | Cash: ${balance:.2f} | Margin: ${margin_used:.2f}")
 
-    # 3) 扫描新机会
+    # 3) 宏观风险检查（每10分钟更新一次）
+    macro_risk = get_macro_risk_assessment()
+    if macro_risk['level'] == 2:
+        logger.warning(f"🛡️ Macro risk CRITICAL: {macro_risk['reason']} - Skipping new entries")
+        # 仍保存状态，但不新开仓
+        state['balance'] = balance
+        state['positions'] = positions
+        save_state(state)
+        # 输出摘要并退出扫描
+        logger.info(f"\n--- Summary (Risk Halt) ---")
+        logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
+        logger.info(f"Closed positions: {len(closed_positions)}")
+        logger.info(f"New entries: 0 (MACRO RISK CRITICAL)")
+        return
+    elif macro_risk['level'] == 1:
+        logger.info(f"🛡️ Macro risk WARNING: {macro_risk['reason']} - Reducing position size")
+        # 在后续仓位计算中使用 reduced_risk_pct
+        adjusted_risk_pct = RISK_PER_TRADE_PCT * 0.5
+    else:
+        adjusted_risk_pct = RISK_PER_TRADE_PCT
+
+    # 4) 扫描新机会
     logger.info(f"Scanning top {SCAN_LIMIT} symbols...")
     try:
         exchange.load_markets()
@@ -216,7 +279,7 @@ def scan_and_trade_v2():
                 price_risk = abs(entry_price - sl_price)
                 if price_risk <= 0:
                     continue
-                risk_amount = total_equity * RISK_PER_TRADE_PCT
+                risk_amount = total_equity * adjusted_risk_pct
                 amount = risk_amount / price_risk
                 max_notional = total_equity * LEVERAGE
                 if amount * entry_price > max_notional:

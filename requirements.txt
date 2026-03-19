@@ -10,3 +10,8 @@ scipy==1.17.1
 six==1.17.0
 threadpoolctl==3.6.0
 tqdm==4.67.3
+
+# 新增：宏观新闻监控
+feedparser==6.0.11
+beautifulsoup4==4.13.3
+requests==2.32.3
