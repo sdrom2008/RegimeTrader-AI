@@ -129,9 +129,9 @@ DRY_RUN=0 python -m regime_trader_ai_product.live_executor
 
 ---
 
-## 📊 模型版本
+## 📊 模型
 
-### v2 (当前推荐)
+### v2 (当前版本)
 - **训练日期**：2026-03-24
 - **数据**：5币种6年1h数据（BTC, ETH, BNB, SOL, XRP）
 - **样本数**：259,120
@@ -143,11 +143,6 @@ DRY_RUN=0 python -m regime_trader_ai_product.live_executor
   - 置信度阈值：0.55
   - 扫描范围：前60个流动性币种
 - **注意**：需配合 `config.py` 使用 v2 配置
-
-### v1 (已弃用)
-- 二分类模型，仅做多
-- 文件：`regime_model.pkl`（旧版）
-- 已归档，不再维护
 
 ---
 
@@ -175,7 +170,6 @@ DRY_RUN=0 python -m regime_trader_ai_product.live_executor
 - **v2 训练日志**：`logs/train_v2_*.log`
 - **绩效分析日志**：`logs/performance_analyzer.log`
 - **绩效报告文件**：`logs/performance/performance_YYYYMMDD_HHMM.md`
-- **v1 日志（已弃用）**：`logs/v1_paper_trader.log`
 
 ---
 
@@ -212,7 +206,6 @@ regime_trader_ai_product/
 ├── paper_trade_state_v2.json    # 模拟盘状态（v2，自动生成）
 ├── regime_model_v2_multi_full.pkl   # v2 AI 模型（多币种）
 ├── regime_model_v2_multi_full_meta.json  # v2 模型元数据
-├── regime_model.pkl             # v1 模型（已弃用）
 ├── config.py                    # v2 配置（扫描参数、阈值）
 ├── strategy_v2_quantile.py      # v2 特征工程与标签
 ├── train_model_v2_multi.py      # v2 多币种训练脚本
@@ -239,13 +232,6 @@ regime_trader_ai_product/
 - 新配置系统（`config.py`）
 - 方向特征工程（DI_diff, +DI_cross 等）
 
-### v1.0 (2026-03-17)
-- 首次打包发布
-- 模拟/实盘逻辑对齐
-- 增强报告（持仓详情、盈亏）
-- 风险控制完整实现
-- 每5分钟扫描，每小时报告
-
 ---
 
 ## ⚠️ 风险提示
@@ -258,5 +244,5 @@ regime_trader_ai_product/
 ---
 
 **开发者：** 虾子 (OpenClaw Agent)  
-**版本：** 1.0  
-**最后更新：** 2026-03-17
+**版本：** 2.1  
+**最后更新：** 2026-03-24
