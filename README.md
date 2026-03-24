@@ -35,7 +35,8 @@ cp config/.env.example .env
 
 4. 准备 AI 模型：
 ```bash
-# 将训练好的模型放置为 regime_model.pkl
+# v2 模型（推荐）：多币种三分类
+# 下载 regime_model_v2_multi_full.pkl 到项目根目录
 # 已在项目根目录创建符号链接
 ```
 
@@ -128,7 +129,29 @@ DRY_RUN=0 python -m regime_trader_ai_product.live_executor
 
 ---
 
-## 📈 监控与报告
+## 📊 模型版本
+
+### v2 (当前推荐)
+- **训练日期**：2026-03-24
+- **数据**：5币种6年1h数据（BTC, ETH, BNB, SOL, XRP）
+- **样本数**：259,120
+- **类型**：三分类（SELL/HOLD/BUY）
+- **准确率**：86%（验证集）
+- **文件**：`regime_model_v2_multi_full.pkl`
+- **参数**：
+  - ADX 阈值：20
+  - 置信度阈值：0.55
+  - 扫描范围：前60个流动性币种
+- **注意**：需配合 `config.py` 使用 v2 配置
+
+### v1 (已弃用)
+- 二分类模型，仅做多
+- 文件：`regime_model.pkl`（旧版）
+- 已归档，不再维护
+
+---
+
+## 📈 性能追踪
 
 ### 自动报告（每小时整点）
 
@@ -148,10 +171,11 @@ DRY_RUN=0 python -m regime_trader_ai_product.live_executor
 
 ### 日志位置
 
-- 执行器日志：`logs/live_executor_cron_dry.log`
-- 绩效分析日志：`logs/performance_analyzer.log`
-- 绩效报告文件：`logs/performance/performance_YYYYMMDD_HHMM.md`
-- 配对策略日志：`logs/2026-03-17_multi_hedge.log`
+- **v2 执行器日志**：`logs/v2_live_*.log`
+- **v2 训练日志**：`logs/train_v2_*.log`
+- **绩效分析日志**：`logs/performance_analyzer.log`
+- **绩效报告文件**：`logs/performance/performance_YYYYMMDD_HHMM.md`
+- **v1 日志（已弃用）**：`logs/v1_paper_trader.log`
 
 ---
 
@@ -161,7 +185,7 @@ DRY_RUN=0 python -m regime_trader_ai_product.live_executor
 A：完全一致。模拟盘使用 `paper_trader.py` 的本地资金管理，实盘直接调用Binance API，但仓位计算、止损、风险检查公式相同。
 
 ### Q：如何调整扫描频率？
-A：修改 crontab 的 `*/5 * * * *` 为其他间隔（注意API限速）。
+A：修改 `config.py` 中的 `SCAN_INTERVAL`（秒），或使用 `live_executor.py` 的循环间隔。
 
 ### Q：止损是市价单还是限价单？
 A：模拟和实盘均使用 `STOP_MARKET` 订单，触发后以市价平仓，可能出现滑点。
@@ -175,27 +199,45 @@ A：单笔亏损固定（5%），但未设整体回撤止损。建议实盘前�
 
 ```
 regime_trader_ai_product/
-├── code/                    # 核心策略模块
+├── code/                          # 核心策略模块
 │   ├── market_state_logic.py
 │   ├── sentiment_handler.py
 │   └── ...
-├── config/                  # 配置文件
+├── config/                        # 配置文件
 │   └── .env.example
-├── data/                   # 历史数据缓存
-├── logs/                   # 运行日志
-├── live_executor.py       # 主执行器（实盘/模拟入口）
-├── paper_trader.py        # 模拟盘引擎
-├── paper_trade_state.json # 模拟盘状态（自动生成）
-├── regime_model.pkl       # AI模型
-├── requirements.txt       # 依赖列表
-├── train_regime_model.py  # 模型训练脚本
-├── PRD_draft.md           # 产品需求文档
-└── PRODUCT_BILINGUAL.md   # 产品双语介绍
+├── data/                         # 历史数据缓存
+├── logs/                         # 运行日志
+├── live_executor.py             # 主执行器（实盘/模拟入口）
+├── paper_trader.py              # 模拟盘引擎（v2）
+├── paper_trade_state_v2.json    # 模拟盘状态（v2，自动生成）
+├── regime_model_v2_multi_full.pkl   # v2 AI 模型（多币种）
+├── regime_model_v2_multi_full_meta.json  # v2 模型元数据
+├── regime_model.pkl             # v1 模型（已弃用）
+├── config.py                    # v2 配置（扫描参数、阈值）
+├── strategy_v2_quantile.py      # v2 特征工程与标签
+├── train_model_v2_multi.py      # v2 多币种训练脚本
+├── requirements.txt             # 依赖列表
+├── PRD_draft.md                 # 产品需求文档
+└── PRODUCT_BILINGUAL.md         # 产品双语介绍
 ```
 
 ---
 
 ## 📝 更新日志
+
+### v2.1 (2026-03-24)
+- ✅ 修复标签泄漏 bug（`strategy_v2_quantile.py`）
+- ✅ 放宽交易参数：全市场扫描 + ADX 20 + 置信度 0.55
+- ✅ 重新训练模型（5币种6年数据，259k样本）
+- ✅ 产生首个新交易（NEAR/USDT 做空）
+- 📝 文档更新（模型版本、项目结构）
+
+### v2.0 (2026-03-20)
+- 升级三分类模型（SELL/HOLD/BUY）
+- 多币种联合训练（BTC/ETH/BNB/SOL/XRP）
+- 动态分位数阈值标签
+- 新配置系统（`config.py`）
+- 方向特征工程（DI_diff, +DI_cross 等）
 
 ### v1.0 (2026-03-17)
 - 首次打包发布
