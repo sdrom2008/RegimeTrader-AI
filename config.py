@@ -6,7 +6,7 @@ v2 策略配置文件（优化后）
 # 市场与扫描参数
 # ========================
 SCAN_LIMIT = 60                # 每次扫描前N个流动性币种（总池）
-TRADING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']  # 仅交易训练过的币种
+TRADING_SYMBOLS = []           # 空列表 = 扫描全部币种（放开白名单）
 MIN_VOLUME_RANK = 20           # 最小交易量排名（可加）
 LOOK_FORWARD_CANDLES = 24      # 预测未来N根K线（24h）
 QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
@@ -14,9 +14,9 @@ QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
 # ========================
 # 技术指标参数（优化后）
 # ========================
-ADX_STRONG_THRESHOLD = 23      # ADX 强趋势阈值（与训练一致）
+ADX_STRONG_THRESHOLD = 20      # ADX 强趋势阈值（从23降到20，捕捉更多信号）
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
-CONFIDENCE_THRESHOLD = 0.60    # 模型置信度阈值（原0.55）
+CONFIDENCE_THRESHOLD = 0.55    # 模型置信度阈值（从0.60降到0.55）
 
 # ========================
 # 风控参数

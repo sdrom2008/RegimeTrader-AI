@@ -16,9 +16,9 @@ def label_data_3class_quantile(df, look_forward_candles=24, quantile_threshold=0
       - 强下跌：未来最低跌幅 > 阈值 且 -DI>+DI 且 ADX>25
       - 震荡：其他
     """
-    # 未来N根K线的最高最低
-    future_high = df['High'].shift(-look_forward_candles).rolling(window=look_forward_candles).max()
-    future_low = df['Low'].shift(-look_forward_candles).rolling(window=look_forward_candles).min()
+    # 未来N根K线的最高最低（修复：直接取未来价格，避免标签泄漏）
+    future_high = df['High'].shift(-look_forward_candles)
+    future_low = df['Low'].shift(-look_forward_candles)
     
     # 预期收益率
     up_return = (future_high - df['Close']) / df['Close']
