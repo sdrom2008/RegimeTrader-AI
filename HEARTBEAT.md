@@ -31,6 +31,18 @@
         - [x] **前端页面改造**（2026-03-22）: 商户会话列表、客服工作台、主管面板，适配新接口
     - **阻塞**: 无（开发环境已就绪）
     - **下一步**: 
+        - [x] **国际化手机号登录** - 支持国家选择器，后端接受 CountryCode
+            - [x] 修改 AuthDTOs：PhoneLoginDto/SendCodeDto/BindPhoneDto 增加 CountryCode
+            - [x] 修改 AuthController：SendCode/PhoneLogin/BindPhone/DecryptPhone 使用完整国际格式
+            - [x] 前端 login.vue：添加国家选择器，移除11位限制
+            - [x] 提交 GitHub: 8d1948c
+        - [x] **多语言界面** - 支持中英文切换（i18n）
+            - [x] 创建语言包（zh-CN, en-US）
+            - [x] 实现 i18n 工具
+            - [x] 添加语言切换按钮（login.vue）
+            - [x] 添加 Footer 显示 ICP 备案号：湘ICP备2026009564号
+            - [x] 翻译核心页面：login, choose-login, shop-setting, sessions, workbench, supervisor
+            - [x] 提交 GitHub: ffa7353, 837c86a, b592eea, 849f39a
         - [ ] **全流程集成测试**（商户 → 客服工作台 → 主管面板）- **待用户执行**
         - [ ] **Shopee平台对接** - 电商平台中最友好，无国内资质要求
             - [x] 创建 `ShopeePlatformClient` 骨架（签名/解析占位）
@@ -42,17 +54,12 @@
             - [x] 实现模拟端点 `/api/webhook/shopee/test`
             - [x] 创建部署脚本 `start-api.sh`
             - [x] 编写部署指南 `DEPLOYMENT.md`
-            - [ ] 实现 Shopee 签名验证逻辑（HMAC-SHA256）
-            - [ ] 实现 Webhook 消息解析（订单/聊天推送）
-            - [ ] 实现消息发送 API 调用
+            - [x] 实现 Shopee 签名验证逻辑（HMAC-SHA256）
+            - [x] 实现 Webhook 消息解析（聊天推送）
+            - [x] 实现消息发送 API 调用（签名+HTTP POST）
             - [ ] 配置 `appsettings.json`（AppKey/Secret/ShopID/AccessToken）
             - [ ] 公网 Webhook URL 配置（ngrok/域名）
-        - [ ] **Windows Server 2022 部署方案** - 待测试通过后准备生产部署
-            - [x] 生成完整部署指南 `WINDOWS_DEPLOYMENT_GUIDE.md`
-            - [x] 生成 MySQL Schema 脚本 `mysql-schema.sql`
-            - [x] 生成生产配置模板 `production-appsettings.json`
-            - [x] 生成 .NET 安装脚本 `install-dotnet-windows.ps1`
-            - [ ] 待用户执行部署并反馈
+        - [x] **Windows Server 2022 部署方案** - ✅ 用户已成功部署并反馈（2026-03-27）
 
 - **项目: RegimeTrader AI v2 (优化版 - 双向交易 + 6年数据)**
     - **状态**: ✅ **已重新训练完成（2026-03-24）** - 修复标签泄漏 bug
