@@ -29,6 +29,10 @@
         - [x] **数据库表结构修复**（2026-03-22）: 修复 CustomerId 类型、新增 chat_messages 表、添加 EnsureCreated 自动建表
         - [x] **多角色身份体系**（2026-03-22）: 区分 Seller/Agent/Supervisor，新增 MerchantController
         - [x] **前端页面改造**（2026-03-22）: 商户会话列表、客服工作台、主管面板，适配新接口
+        - [x] **动态导航栏与多角色UI分离**（2026-03-28）: 实现Seller/Agent/Supervisor三套不同TabBar（superset + hide/show），派遣专业化体验
+        - [x] **客服专用登录页**（agent-login）: 邮箱密码登录，跳转工作台
+        - [x] **商户团队管理页**（team）: 添加/移除客服成员，支持分配主管或普通客服角色
+        - [x] **后端API循环引用修复**（2026-03-28）: 在Program.cs添加ReferenceHandler.Preserve，解决/api/support/tickets 500错误
     - **阻塞**: 无（开发环境已就绪）
     - **下一步**: 
         - [x] **国际化手机号登录** - 支持国家选择器，后端接受 CountryCode
@@ -60,6 +64,7 @@
             - [ ] 配置 `appsettings.json`（AppKey/Secret/ShopID/AccessToken）
             - [ ] 公网 Webhook URL 配置（ngrok/域名）
         - [x] **Windows Server 2022 部署方案** - ✅ 用户已成功部署并反馈（2026-03-27）
+        - [x] **H5 微信登录兼容性修复** - 已通过条件编译在 H5 环境隐藏微信登录按钮，避免无法获取 code 的问题。
 
 - **项目: RegimeTrader AI v2 (优化版 - 双向交易 + 6年数据)**
     - **状态**: ✅ **已重新训练完成（2026-03-24）** - 修复标签泄漏 bug
@@ -83,8 +88,9 @@
         - [ ] 绩效分析（胜率、盈亏比、最大回撤）
         - [ ] 评估是否投入真实资金
 
-- **战略思考: SaaS 产品演进 (OpenClaw 时代)**
-    - **方向**: 升级为 **"AI 主控 Agent + 子Agent 协作 + 工具自动执行"** 模式
+- **战略思考: SaaS 产品演进 (跨境电商转型)**
+    - **新方向**: 国内平台API封闭，全面转型**跨境电商（首发 Shopee，后续 Lazada/TikTok）**
+    - **新增基建**: **管理后台 (Admin Panel)** - 用于管理商户、订阅、账单及系统级配置（尚未构建）。
     - **行动项**:
         - [ ] 将现有 Service 封装为 Agent
         - [ ] 设计并实现 `MainAgent`
