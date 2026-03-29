@@ -1,0 +1,55 @@
+OpenClaw status
+
+Overview
+┌─────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Item            │ Value                                                                                             │
+├─────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Dashboard       │ http://127.0.0.1:60000/                                                                           │
+│ OS              │ linux 6.17.0-1008-gcp (x64) · node 22.22.1                                                        │
+│ Tailscale       │ off                                                                                               │
+│ Channel         │ stable (default)                                                                                  │
+│ Update          │ available · pnpm · npm update 2026.3.7                                                            │
+│ Gateway         │ local · ws://127.0.0.1:60000 (local loopback) · reachable 31ms · auth token · instance-20260307-  │
+│                 │ 030351 (10.140.0.3) app 2026.3.2 linux 6.17.0-1008-gcp                                            │
+│ Gateway service │ systemd installed · enabled · running (pid 17629, state active)                                   │
+│ Node service    │ systemd not installed                                                                             │
+│ Agents          │ 1 · no bootstrap files · sessions 1 · default main active just now                                │
+│ Memory          │ 0 files · 0 chunks · dirty · sources memory · plugin memory-core · vector ready · fts ready ·     │
+│                 │ cache on (0)                                                                                      │
+│ Probes          │ skipped (use --deep)                                                                              │
+│ Events          │ none                                                                                              │
+│ Heartbeat       │ 30m (main)                                                                                        │
+│ Sessions        │ 1 active · default gemini-flash-latest (200k ctx) · ~/.openclaw/agents/main/sessions/sessions.    │
+│                 │ json                                                                                              │
+└─────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Security audit
+Summary: 0 critical · 1 warn · 1 info
+  WARN Reverse proxy headers are not trusted
+    gateway.bind is loopback and gateway.trustedProxies is empty. If you expose the Control UI through a reverse proxy, configure trusted proxies so local-client c…
+    Fix: Set gateway.trustedProxies to your proxy IPs or keep the Control UI local-only.
+Full report: openclaw security audit
+Deep probe: openclaw security audit --deep
+
+Channels
+┌──────────┬─────────┬────────┬───────────────────────────────────────────────────────────────────────────────────────┐
+│ Channel  │ Enabled │ State  │ Detail                                                                                │
+├──────────┼─────────┼────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+└──────────┴─────────┴────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+
+Sessions
+┌────────────────────────────────────────────────────────┬────────┬──────────┬─────────────────────┬──────────────────┐
+│ Key                                                    │ Kind   │ Age      │ Model               │ Tokens           │
+├────────────────────────────────────────────────────────┼────────┼──────────┼─────────────────────┼──────────────────┤
+│ agent:main:main                                        │ direct │ just now │ gemini-flash-latest │ 214k/1049k (20%) │
+└────────────────────────────────────────────────────────┴────────┴──────────┴─────────────────────┴──────────────────┘
+
+FAQ: https://docs.openclaw.ai/faq
+Troubleshooting: https://docs.openclaw.ai/troubleshooting
+
+Update available (npm 2026.3.7). Run: openclaw update
+
+Next steps:
+  Need to share?      openclaw status --all
+  Need to debug live? openclaw logs --follow
+  Need to test channels? openclaw status --deep

@@ -61,14 +61,27 @@ These formats should be used when documenting new products or logging significan
     *   Next steps: Clean up redundant usings, ensure runtime behavior, align agent implementations.
 
 ## Upgrade Log for NexusAI Tech
-*   **Version**: 2026-03-16
-*   **Date**: 2026-03-16
+*   **Version**: 2026-03-22（数据库修复）
+*   **Date**: 2026-03-22
 *   **Description of Changes**:
-    *   Refactored code structure to enforce layering and separation of concerns.
-    *   Fixed multiple compilation errors (missing usings, unimplemented interface methods, mismatched agent interfaces).
-    *   Prepared build environment (dotnet 10.0.201) and achieved successful solution build.
-*   **Impact**: Project is now in a compilable state; foundational issues resolved. Some agents disabled pending proper interface implementation.
-*   **Related Task/Bounty**: NexusAI Tech backend MVP development.
+    *   Fixed `chat_sessions.CustomerId` type mismatch: changed from BINARY(16) to VARCHAR(100) to match entity definition.
+    *   Added missing `chat_messages` table creation to migration script.
+    *   Added `db.Database.EnsureCreated()` in Program.cs to auto-provision tables in development.
+    *   Fixed `ILogger<>` missing using in GeneralChatAgent.
+    *   Completed Database and Jwt configuration in appsettings files.
+    *   Generated EF Core design-time factory and initial migration files for MySQL.
+*   **Impact**: Resolved `SaveAsync` hang on first conversation due to missing tables and column type mismatch. API now starts on port 7092 and auto-creates all tables in development environment.
+*   **Related Task**: Fix first-conversation crash in NexusAI Tech MVP.
+
+
+## Upgrade Log for NexusAI Tech
+*   **Version**: Strategic Pivot (Cross-Border E-Commerce)
+*   **Date**: 2026-03-28
+*   **Description of Changes**:
+    *   **Business Pivot**: Moved away from domestic platforms (Taobao/JD) due to closed APIs and strict limits. Pivoting to cross-border e-commerce platforms (initially Shopee).
+    *   **Feature Gap identified**: **Admin Backend (管理后台)** needs to be built for managing Sellers, Subscriptions, and Platform configurations.
+    *   **Fixes applied**: Fixed WeChat login limitations on H5 (hidden via conditional compile), and implemented automatic Seller registration during Phone Login.
+*   **Impact**: Focus shifted to integrating `ShopeePlatformClient`. Planning architecture for the new Admin Panel.
 
 ## Product: RegimeTrader AI (智能趋势跟踪量化交易系统)
 *   **Description**: AI驱动的期货自动交易系统，基于机器学习识别市场状态（趋势/震荡），仅在趋势明确时开仓，配合3倍杠杆和ATR动态止损，实现风险可控的趋势跟踪。
@@ -95,13 +108,12 @@ These formats should be used when documenting new products or logging significan
 *   **Documentation**: `regime_trader_ai_product/README.md`
 
 ## Upgrade Log for RegimeTrader AI
-*   **Version**: v1.2
-*   **Date**: 2026-03-17
+*   **Version**: v2.0-optimized
+*   **Date**: 2026-03-21
 *   **Description of Changes**:
-    *   新增 `performance_analyzer.py` - 自动绩效分析器
-    *   每小时生成详细 Markdown 报告（交易统计、持仓详情、资产曲线）
-    *   自动发送绩效摘要到 WhatsApp（总资产、胜率、盈亏比）
-    *   更新 crontab：绩效分析每小时第5分钟运行
-    *   完善文档：README、INSTALL、PRODUCT_BILINGUAL
-*   **Impact**: 提供完整的交易绩效追踪能力，方便评估策略有效性
-*   **Related Task**: 自动量化交易软件开发与验证
+    *   Multi-coin model training completed (5 symbols: BTC, ETH, BNB, SOL, XRP)
+    *   Config updates: TRADING_SYMBOLS whitelist, RISK_PER_TRADE_PCT=5%, ADX=23
+    *   Disabled macro risk module to avoid network dependencies
+    *   Git commit pushed: 09189ba (excludes large .pkl files, includes metadata)
+*   **Impact**: Enables multi-position capability; model ready for dry-run validation
+*   **Related Task**: Phase 2 - Optimized bidirectional trading with multi-symbol model

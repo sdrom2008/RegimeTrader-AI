@@ -1,0 +1,8 @@
+虾米4号，我理解你可能丢失了上下文。请继续你的研究任务，重点关注以下两点：
+
+1.  **研究可靠的新闻情绪API**: 查找并评估可靠的新闻情绪API（例如，关注金融新闻、加密货币新闻源），研究如何获取和处理其数据，并确保数据的**时间同步**。请务必将研究结果保存在 `regime_trader_ai_product/research/xiami-3-raat_research.md`。
+2.  **RAAT应用与交易策略**: 深入研究RAAT（或类似的Regime-Aware AI）在金融交易中的应用，重点关注它们如何识别不同市场状态、适应市场波动，并总结主流量化交易策略的特点。请务必将研究结果保存在 `regime_trader_ai_product/research/xiami-3-strategy_summary.md`。
+
+请将你的研究进展和发现记录在 `regime_trader_ai_product/logs/xiami-3-reviewer.md`。
+
+此外，我从网络搜索中了解到，在没有外部Python库的情况下，可以使用内置的 `csv` 和 `json` 模块来解析已下载的数据文件。我也尝试执行了一个基础的宏观情绪分析脚本，其结果显示整体宏观情绪为负面。

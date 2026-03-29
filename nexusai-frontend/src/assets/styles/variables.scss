@@ -1,0 +1,35 @@
+// 颜色系统
+$primary-color: #1677FF;
+$primary-gradient: linear-gradient(135deg, #1677FF 0%, #722ED1 100%);
+$secondary-color: #722ED1;
+$background-color: #F5F7FA;
+$card-background: #FFFFFF;
+$text-primary: #1F1F1F;
+$text-secondary: #8C8C8C;
+$border-color: #E8E8E8;
+$success-color: #52C41A;
+$warning-color: #FAAD14;
+$error-color: #FF4D4F;
+
+// 间距系统（8px 基准）
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 16px;
+$spacing-lg: 24px;
+$spacing-xl: 32px;
+$spacing-xxl: 48px;
+
+// 圆角
+$border-radius-sm: 4px;
+$border-radius-md: 8px;
+$border-radius-lg: 12px;
+$border-radius-xl: 16px;
+
+// 阴影
+$box-shadow-sm: 0 1px 2px -2px rgba(0,0,0,0.16), 0 3px 6px 0 rgba(0,0,0,0.12);
+$box-shadow-md: 0 6px 16px 0 rgba(0,0,0,0.08);
+$box-shadow-lg: 0 12px 32px 0 rgba(0,0,0,0.08);
+
+// 字体
+$font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+$font-family-code: 'JetBrains Mono', 'SF Mono', Monaco, Consolas, monospace;

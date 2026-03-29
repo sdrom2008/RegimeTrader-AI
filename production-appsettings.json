@@ -1,0 +1,46 @@
+# NexusAI Tech - 生产环境 appsettings.json 模板
+# 请复制到发布目录并修改真实值
+
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore": "Warning"
+    }
+  },
+
+  "Database": {
+    "ConnectionString": "server=localhost;port=3306;database=nexusai;user=nexusai;password=请修改为真实密码;"
+  },
+
+  "Jwt": {
+    "Key": "请替换为至少32字符的随机字符串，例如：openssl rand -base64 32",
+    "Issuer": "NexusAI",
+    "Audience": "NexusAI",
+    "ExpireMinutes": 1440
+  },
+
+  "AllowedHosts": "*",
+
+  "Shopee": {
+    "AppKey": "",
+    "AppSecret": "",
+    "AccessToken": "",
+    "ShopId": ""
+  },
+
+  "Taobao": {
+    "AppKey": "",
+    "AppSecret": "",
+    "AccessToken": "",
+    "ShopId": ""
+  },
+
+  "Ai": {
+    "Provider": "Aliyun",  // Aliyun, OpenAI, Azure, etc.
+    "ApiKey": "",
+    "Endpoint": "",
+    "Model": "qwen-turbo"
+  }
+}

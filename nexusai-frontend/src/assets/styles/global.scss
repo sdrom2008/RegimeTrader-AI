@@ -1,0 +1,205 @@
+@import './variables.scss';
+@import './mixins.scss';
+
+// 全局样式重置
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: $font-family-base;
+  font-size: 14px;
+  line-height: 1.5715;
+  color: $text-primary;
+  background-color: $background-color;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+// 滚动条美化
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  
+  &:hover {
+    background: rgba(0, 0, 0, 0.3);
+  }
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+// 链接样式
+a {
+  color: $primary-color;
+  text-decoration: none;
+  
+  &:hover {
+    color: darken($primary-color, 10%);
+  }
+}
+
+// 通用容器
+.page-container {
+  padding: $spacing-lg;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+// 页面标题样式
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: $spacing-lg;
+  background: $primary-gradient;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+// 卡片通用样式
+.content-card {
+  background: $card-background;
+  border-radius: $border-radius-lg;
+  box-shadow: $box-shadow-sm;
+  padding: $spacing-lg;
+  margin-bottom: $spacing-lg;
+  @include card-hover;
+}
+
+// 表格样式覆盖
+.ant-table {
+  background: $card-background;
+  border-radius: $border-radius-md;
+  
+  &-thead > tr > th {
+    background: #F5F7FA;
+    font-weight: 600;
+    border-bottom: 2px solid $border-color;
+  }
+  
+  &-tbody > tr:hover > td {
+    background: #F5F7FA;
+  }
+}
+
+// 表单样式覆盖
+.ant-form-item-label > label {
+  font-weight: 500;
+  color: $text-primary;
+}
+
+.ant-input,
+.ant-input-textarea {
+  border-radius: $border-radius-md;
+  
+  &:hover {
+    border-color: $primary-color;
+  }
+  
+  &:focus {
+    border-color: $primary-color;
+    box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.2);
+  }
+}
+
+.ant-btn {
+  border-radius: $border-radius-md;
+  font-weight: 500;
+  
+  &.ant-btn-primary {
+    @include gradient-bg;
+    border: none;
+    color: white;
+    
+    &:hover {
+      opacity: 0.9;
+      border-color: transparent;
+    }
+  }
+}
+
+// 消息提示样式
+.ant-message {
+  &-success {
+    .ant-message-custom-content {
+      color: $success-color;
+    }
+  }
+  
+  &-error {
+    .ant-message-custom-content {
+      color: $error-color;
+    }
+  }
+}
+
+// Loading 遮罩
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  border-radius: $border-radius-lg;
+}
+
+// 渐变文字
+.gradient-text {
+  background: $primary-gradient;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+// 徽章
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  
+  &-success {
+    background: rgba(82, 196, 26, 0.1);
+    color: $success-color;
+  }
+  
+  &-warning {
+    background: rgba(250, 173, 20, 0.1);
+    color: $warning-color;
+  }
+  
+  &-error {
+    background: rgba(255, 77, 79, 0.1);
+    color: $error-color;
+  }
+  
+  &-primary {
+    background: rgba(22, 119, 255, 0.1);
+    color: $primary-color;
+  }
+}
