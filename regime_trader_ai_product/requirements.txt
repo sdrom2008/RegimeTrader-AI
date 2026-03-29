@@ -1,0 +1,17 @@
+joblib==1.5.3
+llvmlite==0.44.0
+numba==0.61.2
+numpy==2.2.6
+pandas==3.0.1
+pandas-ta==0.4.71b0
+python-dateutil==2.9.0.post0
+scikit-learn==1.8.0
+scipy==1.17.1
+six==1.17.0
+threadpoolctl==3.6.0
+tqdm==4.67.3
+
+# 新增：宏观新闻监控
+feedparser==6.0.11
+beautifulsoup4==4.13.3
+requests==2.32.3

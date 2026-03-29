@@ -1,0 +1,131 @@
+{
+  "trained_at": "2026-03-24T07:25:23.860582",
+  "symbols": [
+    "BTC",
+    "ETH",
+    "BNB",
+    "SOL",
+    "XRP"
+  ],
+  "num_samples": 259120,
+  "class_distribution": [
+    25881,
+    214925,
+    18314
+  ],
+  "feature_importance": [
+    {
+      "feature": "DI_diff",
+      "importance": 0.27025240280456214
+    },
+    {
+      "feature": "ADX",
+      "importance": 0.18826320835029878
+    },
+    {
+      "feature": "-DI",
+      "importance": 0.09029234623242433
+    },
+    {
+      "feature": "+DI",
+      "importance": 0.07488195603252988
+    },
+    {
+      "feature": "ADX_weak",
+      "importance": 0.06278503948076207
+    },
+    {
+      "feature": "Price_vs_EMA200",
+      "importance": 0.03450698023064898
+    },
+    {
+      "feature": "ADX_strong",
+      "importance": 0.03356514356297043
+    },
+    {
+      "feature": "MACD_hist",
+      "importance": 0.02529381555167825
+    },
+    {
+      "feature": "Price_std_20",
+      "importance": 0.024158568989913552
+    },
+    {
+      "feature": "RSI",
+      "importance": 0.023126583071206536
+    },
+    {
+      "feature": "RSI_dev",
+      "importance": 0.02311629722024916
+    },
+    {
+      "feature": "ATR_ratio",
+      "importance": 0.023048153025006332
+    },
+    {
+      "feature": "Volume_Change_Ratio",
+      "importance": 0.02201917102957971
+    },
+    {
+      "feature": "Drawdown_20",
+      "importance": 0.021944693091472553
+    },
+    {
+      "feature": "EMA_200",
+      "importance": 0.021057807591786
+    },
+    {
+      "feature": "EMA_50",
+      "importance": 0.02081585186928678
+    },
+    {
+      "feature": "ATR",
+      "importance": 0.02077772400784834
+    },
+    {
+      "feature": "+DI_cross_above_-DI",
+      "importance": 0.010063328085711101
+    },
+    {
+      "feature": "-DI_cross_above_+DI",
+      "importance": 0.00631381483374781
+    },
+    {
+      "feature": "MACD_hist_positive",
+      "importance": 0.0028271333172204876
+    },
+    {
+      "feature": "MACD_hist_cross_up",
+      "importance": 0.0008899816210967141
+    }
+  ],
+  "feature_list": [
+    "ADX",
+    "+DI",
+    "-DI",
+    "DI_diff",
+    "MACD_hist",
+    "MACD_hist_cross_up",
+    "RSI",
+    "ATR",
+    "Price_vs_EMA200",
+    "Volume_Change_Ratio",
+    "EMA_50",
+    "EMA_200",
+    "ADX_strong",
+    "ADX_weak",
+    "+DI_cross_above_-DI",
+    "-DI_cross_above_+DI",
+    "MACD_hist_positive",
+    "Price_std_20",
+    "ATR_ratio",
+    "Drawdown_20",
+    "RSI_dev"
+  ],
+  "config": {
+    "n_estimators": 300,
+    "class_weight": "balanced_subsample",
+    "look_forward_candles": 24,
+    "quantile_threshold": 0.6
+  }
+}

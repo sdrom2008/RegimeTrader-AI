@@ -1,0 +1,47 @@
+# RegimeTrader AI v2.0 - 发布文件清单
+
+## 核心运行文件
+config_v2.py
+logger_v2.py
+paper_trader_v2_clean.py
+monitor_v2.py
+performance_analyzer.py
+live_executor.py
+quick_test_btc.py
+scan_top20.py
+
+## 训练与数据处理
+train_model_v2_quantile.py
+fetch_6y_data.py
+fetch_multiple_6y.py
+analyze_labels.py
+optimize_thresholds.py
+
+## 文档
+README.md
+README_v2.md
+INSTALL.md
+PRODUCT_BILINGUAL.md
+PROJECT_DOCUMENTATION.md
+SALES_PITCH.md
+TEST_PLAN_v2.md
+PRD_draft.md
+RELEASE_FILES.txt
+CHANGELOG_v2.md
+
+## 配置文件（模板）
+config/.env.example
+
+## 模型文件（二进制，已训练）
+regime_model_v2_quantile.pkl
+
+## 依赖
+requirements.txt
+
+## 排除项（不包含在发布包）
+- data/           # 原始历史数据（用户自行下载）
+- logs/           # 运行日志
+- paper_trade_state*.json  # 状态文件
+- .venv/          # 虚拟环境
+- __pycache__/
+- *.log

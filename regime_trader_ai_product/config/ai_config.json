@@ -1,0 +1,24 @@
+{
+  "model_path": "path/to/your/trained/model.pkl",
+  "feature_importance": {
+    "ema_10": 0.1,
+    "ema_20": 0.1,
+    "ema_50": 0.1,
+    "ema_100": 0.1,
+    "macd_hist": 0.2,
+    "adx": 0.2,
+    "atr": 0.1,
+    "market_state": 0.1,
+    "macro_sentiment": 0.1
+  },
+  "thresholds": {
+    "buy_signal_score": 0.7,
+    "sell_signal_score": 0.3,
+    "market_state_threshold": 25.0
+  },
+  "trading_params": {
+    "default_position_size": 0.05,
+    "max_position_size": 0.08,
+    "risk_exposure_limit": 0.02
+  }
+}

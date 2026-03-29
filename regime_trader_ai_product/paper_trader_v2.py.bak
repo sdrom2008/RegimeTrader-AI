@@ -1,0 +1,252 @@
+"""
+运行三分类策略扫描
+（无需sklearn，只加载已训练的模型）
+"""
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import json
+import datetime
+import time
+import ccxt
+import pickle
+import subprocess
+import shutil
+import logging
+from regime_trader_ai_product.logger_v2 import setup_logger
+from regime_trader_ai_product.strategy_v2 import load_state, save_state
+from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2
+from regime_trader_ai_product.config_v2 import (
+    ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD,
+    CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
+    STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR, TRAILING_STOP_ATR,
+    SCAN_LIMIT, STATE_FILE
+)
+
+# 初始化日志
+logger = setup_logger()
+MODEL_FILE = 'regime_model_v2_quantile.pkl'  # 使用分位数模型
+
+DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
+
+MODEL_FILE = 'regime_model_v2.pkl'
+
+DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
+
+def send_whatsapp_alert(message):
+    print(f"[WhatsApp] {message}")
+    if DRY_RUN:
+        print("[WhatsApp] Dry-run: skip sending")
+        return
+    safe_msg = message.replace("'", "'\\''")
+    target = "+8613908412393"
+    openclaw_path = "/home/sdrom2008/.npm-global/bin/openclaw"
+    if not os.path.exists(openclaw_path):
+        openclaw_path = shutil.which("openclaw") or "openclaw"
+    cmd = f"{openclaw_path} message send --channel whatsapp --target '{target}' --message '{safe_msg}'"
+    try:
+        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+        print("[WhatsApp] Sent")
+    except Exception as e:
+        print(f"[WhatsApp] Failed: {e}")
+
+def scan_and_trade_v2():
+    print(f"\n{'='*60}")
+    print(f"🚀 RegimeTrader AI v2 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}\n")
+
+    # 加载模型
+    try:
+        with open(MODEL_FILE, 'rb') as f:
+            model = pickle.load(f)
+        print(f"[+] Model loaded")
+    except Exception as e:
+        print(f"[!] Model not found: {e}. Please run: python train_model_v2.py")
+        return
+
+    # 加载状态
+    state = load_state()
+    balance = state['balance']
+    positions = state['positions']
+    print(f"[*] Balance: ${balance:.2f} | Positions: {len(positions)}")
+
+    fee_rate = 0.0004
+    exchange = ccxt.binance({'enableRateLimit': True})
+
+    # 更新持仓
+    closed_positions = []
+    unrealized_total = 0.0
+
+    for sym, pos in list(positions.items()):
+        try:
+            ticker = exchange.fetch_ticker(sym)
+            price = ticker['last']
+            entry = pos['entry_price']
+            amount = pos['amount']
+            atr = pos['atr']
+            sl = pos['sl']
+
+            if pos['type'] == 'BUY':
+                unreal = (price - entry) * amount
+                unrealized_total += unreal
+                if price > pos.get('highest_seen', entry):
+                    pos['highest_seen'] = price
+                    pos['sl'] = max(sl, price - atr * TRAILING_STOP_ATR)
+                if price <= sl:
+                    exit_price = sl
+                    pnl = (exit_price - entry) * amount
+                    fee = (exit_price * amount) * fee_rate
+                    balance += pos['margin'] + pnl - fee
+                    closed_positions.append((sym, pnl, fee))
+            elif pos['type'] == 'SELL':
+                unreal = (entry - price) * amount
+                unrealized_total += unreal
+                if price < pos.get('lowest_seen', entry):
+                    pos['lowest_seen'] = price
+                    pos['sl'] = min(sl, price + atr * TRAILING_STOP_ATR)
+                if price >= sl:
+                    exit_price = sl
+                    pnl = (entry - exit_price) * amount
+                    fee = (exit_price * amount) * fee_rate
+                    balance += pos['margin'] + pnl - fee
+                    closed_positions.append((sym, pnl, fee))
+        except Exception as e:
+            print(f"[!] {sym} update error: {e}")
+
+    for sym, pnl, fee in closed_positions:
+        positions.pop(sym, None)
+        state['trade_history'].append({
+            'symbol': sym,
+            'pnl': pnl,
+            'fee': fee,
+            'exit_time': datetime.datetime.utcnow().isoformat()+'Z'
+        })
+
+    # 计算权益
+    margin_used = sum(p['margin'] for p in positions.values())
+    total_equity = balance + margin_used + unrealized_total
+
+    print(f"[*] Equity: ${total_equity:.2f} | Cash: ${balance:.2f} | Margin: ${margin_used:.2f}")
+
+    # 扫描新机会（只扫描前50高流动性币种）
+    try:
+        exchange.load_markets()
+        tickers = exchange.fetch_tickers()
+        usdt_pairs = [s for s, t in tickers.items() if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s]
+        usdt_pairs.sort(key=lambda s: tickers[s].get('quoteVolume',0) or 0, reverse=True)
+        symbols = usdt_pairs[:50]
+    except Exception as e:
+        print(f"[!] Fetch tickers failed: {e}")
+        symbols = []
+
+    new_entries = []
+
+    for symbol in symbols:
+        if symbol in positions:
+            continue
+        time.sleep(0.2)
+
+        try:
+            ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=250)
+            import pandas as pd
+            df = pd.DataFrame(ohlcv, columns=['timestamp','Open','High','Low','Close','Volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+
+            if len(df) < 200:
+                continue
+
+            df_feat = calculate_features(df.copy())
+            if df_feat.empty:
+                continue
+
+            latest = df_feat.iloc[-1]
+            features = [
+                'ADX', '+DI', '-DI', 'DI_diff',
+                'MACD_hist', 'MACD_hist_cross_up',
+                'RSI', 'ATR',
+                'Price_vs_EMA200',
+                'Volume_Change_Ratio',
+                'EMA_50', 'EMA_200',
+                'ADX_strong', 'ADX_weak',
+                '+DI_cross_above_-DI', '-DI_cross_above_+DI',
+                'MACD_hist_positive'
+            ]
+            X = latest[features].values.reshape(1,-1)
+
+            pred = model.predict(X)[0]
+            probs = model.predict_proba(X)[0]
+            confidence = probs[pred]
+            adx = latest['ADX']
+
+            # 判断信号
+            signal = None
+            if adx >= ADX_STRONG_THRESHOLD and confidence >= CONFIDENCE_THRESHOLD:
+                if pred == 2:  # Up
+                    signal = "BUY"
+                elif pred == 0:  # Down
+                    signal = "SELL"
+
+            if signal:
+                entry_price = latest['Close']
+                atr = latest['ATR']
+
+                if signal == "BUY":
+                    sl_price = entry_price - atr * STOP_LOSS_ATR_MULT
+                    tp_price = entry_price + (entry_price - sl_price) * TAKE_PROFIT_RR
+                else:
+                    sl_price = entry_price + atr * STOP_LOSS_ATR_MULT
+                    tp_price = entry_price - (sl_price - entry_price) * TAKE_PROFIT_RR
+
+                # 计算仓位（基于总权益）
+                price_risk = abs(entry_price - sl_price)
+                if price_risk <= 0:
+                    continue
+                risk_amount = total_equity * RISK_PER_TRADE_PCT
+                amount = risk_amount / price_risk
+                max_notional = total_equity * LEVERAGE
+                if amount * entry_price > max_notional:
+                    amount = max_notional / entry_price
+
+                margin_req = (amount * entry_price) / LEVERAGE
+                used_margin = sum(p['margin'] for p in positions.values())
+                if margin_req > (total_equity - used_margin):
+                    continue
+
+                balance -= margin_req
+                pos = {
+                    'type': signal,
+                    'entry_price': entry_price,
+                    'amount': amount,
+                    'margin': margin_req,
+                    'atr': atr,
+                    'sl': sl_price,
+                    'tp': tp_price,
+                    'highest_seen': entry_price if signal=="BUY" else None,
+                    'lowest_seen': entry_price if signal=="SELL" else None,
+                    'entry_time': datetime.datetime.utcnow().isoformat()+'Z',
+                    'confidence': confidence
+                }
+                positions[symbol] = pos
+                new_entries.append(f"{symbol} {signal} @{entry_price:.4f} SL:{sl_price:.4f}")
+                print(f"  📈 NEW {signal} {symbol} @{entry_price:.4f} | ATR:{atr:.4f} | Amount:{amount:.4f}")
+
+        except Exception as e:
+            print(f"[!] {symbol} scan error: {e}")
+
+    # 保存
+    state['balance'] = balance
+    state['positions'] = positions
+    save_state(state)
+
+    print(f"\n--- Summary ---")
+    print(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
+    print(f"Closed: {len(closed_positions)}")
+    for sym, pnl, fee in closed_positions:
+        print(f"  {sym}: ${pnl:+.2f}")
+    print(f"New entries: {len(new_entries)}")
+
+if __name__ == '__main__':
+    scan_and_trade_v2()
