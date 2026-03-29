@@ -1,65 +1,65 @@
-# 工作空间归档 - 2026-03-29
-# 包含：NexusAI Tech (my-project), RegimeTrader AI (regime_trader_ai_product), 及相关文档与脚本
-# 排除：大型数据文件（*.pkl, *.csv, *.hdf5, *.parquet, *.zip）、虚拟环境、node_modules、dist
+# OpenClaw 框架自身（不需要）
+oc_build/
+.openclaw/
 
-# 大型数据文件（已备份，无需重复）
+# 大型二进制文件与安装包
+*.deb
+*.zip
+*.tar.gz
 *.pkl
-*.csv
 *.hdf5
 *.h5
 *.parquet
-*.zip
-*.tar.gz
+*.log
 
-# 虚拟环境与依赖
+# 虚拟环境
 .venv/
 venv/
-node_modules/
 __pycache__/
+node_modules/
 
 # 构建输出
 dist/
 build/
-*.log
 
-# 操作系统文件
+# 系统文件
 .DS_Store
 Thumbs.db
 
-# 安全密钥（生产环境请自行配置）
+# 安全配置
 .env
-*secret*
-*password*
-*.pem
-*.key
 
-# 临时文件与缓存
-tmp/
-temp/
-.cache/
-logs/
-
-# 大型二进制/安装包
-WeChat.deb
-packages-microsoft-prod.deb
-shrimp_flash_install.ps1
-china_install.ps1
-install-dotnet-windows.ps1
-
-# 下面这些是重要项目，但排除其子目录中的大数据
-/my-project/frontend/dist/
-/my-project/frontend/node_modules/
-/regime_trader_ai_product/data/
-/regime_trader_ai_product/*.pkl
-/regime_trader_ai_product/regime_model.pkl
-/regime_trader_ai_product/*.tar.gz
-/regime_trader_ai_product/*.zip
-
-# 其他可选的临时归档（已存在于其他仓库）
-my-project/.git/
-my-project/.idea/
-my-project/.vscode/
-my-project/*.sln
-my-project/*.csproj
+# 项目内的大数据/依赖/构建产物（保留源码）
+my-project/frontend/node_modules/
+my-project/frontend/dist/
 my-project/Properties/
 my-project/obj/
+my-project/*.sln
+my-project/*.csproj
+my-project/.idea/
+my-project/.vscode/
+my-project/.vs/
+my-project/api.log
+my-project/fix_choose_login.py
+my-project/fix_profile_index.py
+my-project/fix_seller.py
+my-project/fix_sms.py
+my-project/mysql-schema.sql
+
+regime_trader_ai_product/data/
+regime_trader_ai_product/*.pkl
+regime_trader_ai_product/*.zip
+regime_trader_ai_product/*.tar.gz
+regime_trader_ai_product/logs/
+regime_trader_ai_product/paper_trade_state.json
+regime_trader_ai_product/sim_account.json
+regime_trader_ai_product/sim_multi_account.json
+regime_trader_ai_product/regime_model.pkl
+regime_trader_ai_product/regime_model_v2.pkl
+
+nexusai-frontend/node_modules/
+nexusai-frontend/dist/
+
+# 其他大项目数据
+btc_usdt_1h_30d.csv
+
