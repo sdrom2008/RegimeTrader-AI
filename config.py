@@ -16,9 +16,11 @@ QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
 # ========================
 # 技术指标参数（优化后）
 # ========================
-ADX_STRONG_THRESHOLD = 20      # ADX 强趋势阈值（从23降到20，捕捉更多信号）
+# 2026-09-10: raised after disastrous offline backtest (WR~35%, PF~0.53, ~-100%).
+# Old defaults: ADX_STRONG_THRESHOLD=20, CONFIDENCE_THRESHOLD=0.55
+ADX_STRONG_THRESHOLD = 25      # ADX 强趋势阈值（was 20）
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
-CONFIDENCE_THRESHOLD = 0.55    # 模型置信度阈值（从0.60降到0.55）
+CONFIDENCE_THRESHOLD = 0.70    # 模型置信度阈值（was 0.55）
 
 # ========================
 # 风控参数
@@ -28,6 +30,13 @@ RISK_PER_TRADE_PCT = 0.05      # 单仓风险（总资金5%，测试多持仓）
 STOP_LOSS_ATR_MULT = 2.0       # 止损：2×ATR
 TAKE_PROFIT_RR = 2.0           # 止盈：2倍风险（2:1盈亏比）
 TRAILING_STOP_ATR = 1.5        # 移动止损：1.5×ATR
+
+# ========================
+# 交易冷却（减少翻炒）
+# ========================
+# Per-symbol bars/hours to wait after a close before re-entry (1h timeframe).
+MIN_BARS_BETWEEN_TRADES = 6    # 平仓后至少间隔 6 根 1h K 线
+COOLDOWN_HOURS = 6             # 等价小时数，供 paper_trader 用时间戳判断
 
 # ========================
 # 过滤条件

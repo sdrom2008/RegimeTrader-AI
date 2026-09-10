@@ -33,7 +33,8 @@ from config import (
     CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
     STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR, TRAILING_STOP_ATR,
     SCAN_LIMIT, STATE_FILE, MODEL_FILE, ENABLE_FUNDING_FILTER,
-    FUNDING_RATE_THRESHOLD, TRADING_SYMBOLS, resolve_model_file
+    FUNDING_RATE_THRESHOLD, TRADING_SYMBOLS, resolve_model_file,
+    COOLDOWN_HOURS, MIN_BARS_BETWEEN_TRADES,
 )
 # from news_fetcher import fetch_all_news
 # from sentiment_analyzer import SentimentAnalyzer
@@ -75,7 +76,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
             return json.load(f)
-    return {'balance': 10000.0, 'positions': {}, 'trade_history': []}
+    return {'balance': 10000.0, 'positions': {}, 'trade_history': [], 'cooldowns': {}}
 
 def save_state(state):
     with open(STATE_FILE, 'w') as f:
@@ -125,6 +126,9 @@ def scan_and_trade_v2():
     closed_positions = []
     unrealized_total = 0.0
 
+    cooldowns = state.setdefault('cooldowns', {})
+    now_utc = datetime.datetime.utcnow()
+
     for sym, pos in list(positions.items()):
         try:
             ticker = exchange.fetch_ticker(sym)
@@ -133,6 +137,10 @@ def scan_and_trade_v2():
             amount = pos['amount']
             atr = pos['atr']
             sl = pos['sl']
+            tp = pos.get('tp')
+
+            exit_price = None
+            exit_reason = None
 
             if pos['type'] == 'BUY':
                 unreal = (price - entry) * amount
@@ -140,38 +148,57 @@ def scan_and_trade_v2():
                 if price > pos.get('highest_seen', entry):
                     pos['highest_seen'] = price
                     pos['sl'] = max(sl, price - atr * TRAILING_STOP_ATR)
-                if price <= sl:
+                    sl = pos['sl']
+                # Prefer TP if hit; else trailing/fixed SL (same as before)
+                if tp is not None and price >= tp:
+                    exit_price = tp
+                    exit_reason = 'TP'
+                elif price <= sl:
                     exit_price = sl
+                    exit_reason = 'SL/TRAIL'
+                if exit_price is not None:
                     pnl = (exit_price - entry) * amount
                     fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
-                    closed_positions.append((sym, pnl, fee))
-                    logger.info(f"CLOSED LONG {sym} @{exit_price:.4f} PnL:${pnl:.2f}")
+                    closed_positions.append((sym, pnl, fee, exit_reason))
+                    logger.info(f"CLOSED LONG {sym} @{exit_price:.4f} ({exit_reason}) PnL:${pnl:.2f}")
             elif pos['type'] == 'SELL':
                 unreal = (entry - price) * amount
                 unrealized_total += unreal
                 if price < pos.get('lowest_seen', entry):
                     pos['lowest_seen'] = price
                     pos['sl'] = min(sl, price + atr * TRAILING_STOP_ATR)
-                if price >= sl:
+                    sl = pos['sl']
+                if tp is not None and price <= tp:
+                    exit_price = tp
+                    exit_reason = 'TP'
+                elif price >= sl:
                     exit_price = sl
+                    exit_reason = 'SL/TRAIL'
+                if exit_price is not None:
                     pnl = (entry - exit_price) * amount
                     fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
-                    closed_positions.append((sym, pnl, fee))
-                    logger.info(f"CLOSED SHORT {sym} @{exit_price:.4f} PnL:${pnl:.2f}")
+                    closed_positions.append((sym, pnl, fee, exit_reason))
+                    logger.info(f"CLOSED SHORT {sym} @{exit_price:.4f} ({exit_reason}) PnL:${pnl:.2f}")
         except Exception as e:
             logger.warning(f"{sym} update error: {e}")
 
-    # 记录平仓历史
-    for sym, pnl, fee in closed_positions:
+    # 记录平仓历史 + 写入 per-symbol 冷却
+    for item in closed_positions:
+        sym, pnl, fee = item[0], item[1], item[2]
+        exit_reason = item[3] if len(item) > 3 else 'SL/TRAIL'
         positions.pop(sym, None)
+        exit_iso = now_utc.isoformat() + 'Z'
         state['trade_history'].append({
             'symbol': sym,
             'pnl': pnl,
             'fee': fee,
-            'exit_time': datetime.datetime.utcnow().isoformat()+'Z'
+            'exit_time': exit_iso,
+            'reason': exit_reason,
         })
+        # Cooldown: block re-entry for COOLDOWN_HOURS after close
+        cooldowns[sym] = exit_iso
 
     # 2) 计算总权益
     margin_used = sum(p['margin'] for p in positions.values())
@@ -216,8 +243,22 @@ def scan_and_trade_v2():
 
     new_entries = []
 
+    def _in_cooldown(sym: str) -> bool:
+        until = cooldowns.get(sym)
+        if not until:
+            return False
+        try:
+            closed_at = datetime.datetime.fromisoformat(until.replace('Z', ''))
+        except Exception:
+            return False
+        hours = (now_utc - closed_at).total_seconds() / 3600.0
+        return hours < float(COOLDOWN_HOURS)
+
     for symbol in symbols:
         if symbol in positions:
+            continue
+        if _in_cooldown(symbol):
+            logger.debug(f"Skip {symbol}: cooldown ({COOLDOWN_HOURS}h / {MIN_BARS_BETWEEN_TRADES} bars)")
             continue
         time.sleep(0.2)
 
@@ -314,14 +355,17 @@ def scan_and_trade_v2():
     # 4) 保存状态
     state['balance'] = balance
     state['positions'] = positions
+    state['cooldowns'] = cooldowns
     save_state(state)
 
     # 5) 输出摘要
     logger.info(f"\n--- Summary ---")
     logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
     logger.info(f"Closed positions: {len(closed_positions)}")
-    for sym, pnl, fee in closed_positions:
-        logger.info(f"  {sym}: ${pnl:+.2f}")
+    for item in closed_positions:
+        sym, pnl = item[0], item[1]
+        reason = item[3] if len(item) > 3 else ''
+        logger.info(f"  {sym}: ${pnl:+.2f} {reason}")
     logger.info(f"New entries: {len(new_entries)}")
     for e in new_entries:
         logger.info(f"  {e}")

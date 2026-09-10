@@ -36,17 +36,22 @@ def main():
     print(f"📊 Strategy: v2 (三分类 + 宏观风险监控)")
     print(f"{'='*60}\n")
 
-    # 导入执行器（延迟导入，确保配置加载）
-    from paper_trader import scan_and_trade_v2
+    # 每轮 reload，使 config/paper_trader 热更新在下一 scan 生效（无需杀进程）
+    import importlib
+    import config as _cfg
+    import paper_trader as _pt
 
     interval = SCAN_INTERVAL
 
     print(f"[*] Scan interval: {interval} seconds")
-    print("[*] Starting main loop...\n")
+    print("[*] Starting main loop (reload paper_trader each scan)...\n")
 
     while True:
         try:
-            scan_and_trade_v2()
+            importlib.reload(_cfg)
+            importlib.reload(_pt)
+            interval = getattr(_cfg, "SCAN_INTERVAL", interval)
+            _pt.scan_and_trade_v2()
         except Exception as e:
             print(f"[!] Executor error: {e}")
             import traceback
