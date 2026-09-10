@@ -5,7 +5,7 @@ Offline historical backtest for RegimeTrader-AI v2 multi model.
 Mirrors paper_trader entry/exit as closely as practical:
 - Features via prepare_features_v2
 - Model: regime_model_v2_multi_full.pkl (fallback quantile)
-- Gates: ADX + confidence from config.py
+- Gates: ADX + confidence + DI direction filter from config.py
 - Long/short with ATR SL + trailing + TP (BUY high>=tp / SELL low<=tp); per-symbol cooldown
 - Fee 4bps; risk sizing + leverage cap from config
 
@@ -41,6 +41,8 @@ from config import (
     TAKE_PROFIT_RR,
     TRAILING_STOP_ATR,
     MIN_BARS_BETWEEN_TRADES,
+    MAX_CONCURRENT_POSITIONS,
+    MAX_HOLD_HOURS,
     resolve_model_file,
 )
 from strategy_v2_quantile import prepare_features_v2
@@ -140,12 +142,16 @@ def simulate_symbol(
     times = df.index.to_numpy()
 
     # Precompute gated signals: None / BUY / SELL
+    # DI direction filter (align paper_trader v3): BUY only if +DI>-DI & pred==2;
+    # SELL only if -DI>+DI & pred==0
+    plus_di = df["+DI"].to_numpy(dtype=float)
+    minus_di = df["-DI"].to_numpy(dtype=float)
     signals = np.empty(len(df), dtype=object)
     for i in range(len(df)):
         if adxs[i] >= ADX_STRONG_THRESHOLD and confs[i] >= CONFIDENCE_THRESHOLD:
-            if preds[i] == 2:
+            if preds[i] == 2 and plus_di[i] > minus_di[i]:
                 signals[i] = "BUY"
-            elif preds[i] == 0:
+            elif preds[i] == 0 and minus_di[i] > plus_di[i]:
                 signals[i] = "SELL"
             else:
                 signals[i] = None
@@ -213,6 +219,11 @@ def simulate_symbol(
                 elif hit_sl:
                     exit_price = sl
                     reason = "SL/TRAIL"
+
+            # Time stop: cut stale holds past prediction horizon
+            if exit_price is None and (i - entry_i) >= int(MAX_HOLD_HOURS):
+                exit_price = price
+                reason = "MAX_HOLD"
 
             if exit_price is not None:
                 if side == "BUY":
@@ -449,16 +460,17 @@ def write_reports(
     date_cst = cst.strftime("%Y%m%d")
 
     header = []
-    header.append("# RegimeTrader-AI v2 Offline Backtest")
+    header.append("# RegimeTrader-AI v3 Offline Backtest")
     header.append("")
     header.append(f"- **生成时间 (UTC):** {now.strftime('%Y-%m-%d %H:%M:%S')}")
     header.append(f"- **本地时间 (CST/UTC+8):** {cst.strftime('%Y-%m-%d %H:%M:%S')}")
     header.append(f"- **模型:** `{os.path.basename(model_path)}`")
     header.append(
         f"- **门槛:** ADX≥{ADX_STRONG_THRESHOLD}, conf≥{CONFIDENCE_THRESHOLD}, "
-        f"SL={STOP_LOSS_ATR_MULT}×ATR, TP={TAKE_PROFIT_RR}:1 RR, trail={TRAILING_STOP_ATR}×ATR, "
-        f"cooldown={MIN_BARS_BETWEEN_TRADES} bars, "
-        f"risk={RISK_PER_TRADE_PCT*100:.1f}%, lev={LEVERAGE}, fee={FEE_RATE}"
+        f"DI方向过滤, SL={STOP_LOSS_ATR_MULT}×ATR, TP={TAKE_PROFIT_RR}:1 RR, "
+        f"trail={TRAILING_STOP_ATR}×ATR, cooldown={MIN_BARS_BETWEEN_TRADES} bars, "
+        f"risk={RISK_PER_TRADE_PCT*100:.1f}%, lev={LEVERAGE}, "
+        f"max_pos={MAX_CONCURRENT_POSITIONS}(paper), fee={FEE_RATE}"
     )
     header.append(f"- **初始资金 (每币种独立):** ${INITIAL_CAPITAL:,.0f}")
     header.append(f"- **数据窗口:** {'全量 ~6y' if not years else f'最近 {years} 年'}")
@@ -472,6 +484,45 @@ def write_reports(
     if sensitivity:
         sens_md, sens_stats = block_for_results("敏感性：edge 触发（信号新出现才开仓）", sensitivity)
 
+    # Inline v1/v2/v3 snapshot for the detailed report (mirrors summary table)
+    s0 = prim_stats
+    cmp_md = []
+    cmp_md.append("## 相对同日 v1 / v2（改进对比）")
+    cmp_md.append("")
+    cmp_md.append("| 指标 | v1 | v2 | v3 | v3−v2 |")
+    cmp_md.append("|------|----|----|----|-------|")
+    _v1r = {"n_trades": 12723, "win_rate": 0.349, "total_return_pct": -100.00, "avg_dd": 100.00, "profit_factor": 0.53, "total_pnl": -45910.69, "avg_bars_held": 6.7}
+    _v2r = {"n_trades": 4870, "win_rate": 0.367, "total_return_pct": -97.94, "avg_dd": 98.19, "profit_factor": 0.63, "total_pnl": -43605.07, "avg_bars_held": 7.3}
+    def _c(v, fmt):
+        if fmt == "pct": return f"{v*100:.1f}%"
+        if fmt == "ret": return f"{v:+.2f}%"
+        if fmt == "dd": return f"{v:.2f}%"
+        if fmt == "pf": return pf_str(v)
+        if fmt == "money": return f"${v:,.2f}"
+        if fmt == "int": return str(int(v))
+        if fmt == "h": return f"{v:.1f}h"
+        return str(v)
+    def _d(key, fmt):
+        d = s0[key] - _v2r[key]
+        if fmt == "pct": return f"{d*100:+.1f}pp"
+        if fmt in ("ret", "dd"): return f"{d:+.2f}pp"
+        if fmt == "pf": return f"{d:+.2f}"
+        if fmt == "money": return f"${d:+,.2f}"
+        if fmt == "int": return f"{int(d):+d}"
+        if fmt == "h": return f"{d:+.1f}h"
+        return str(d)
+    for lab, key, fmt in [
+        ("总交易数", "n_trades", "int"), ("胜率", "win_rate", "pct"),
+        ("合计收益", "total_return_pct", "ret"), ("最大回撤均值", "avg_dd", "dd"),
+        ("盈亏因子", "profit_factor", "pf"), ("已实现净盈亏", "total_pnl", "money"),
+        ("平均持仓", "avg_bars_held", "h"),
+    ]:
+        cmp_md.append(f"| {lab} | {_c(_v1r[key], fmt)} | {_c(_v2r[key], fmt)} | {_c(s0[key], fmt)} | {_d(key, fmt)} |")
+    cmp_md.append("")
+    cmp_md.append("**v3 改动：** risk 5%→2%，杠杆 2.5→2.0，SL 2.0→1.5×ATR，TP RR 2.0→2.5，DI方向过滤，纸交易 max 同时持仓=2。")
+    cmp_md.append("")
+    cmp_block = "\n".join(cmp_md) + "\n"
+
     limits = []
     limits.append("## 相对实盘纸交易的局限")
     limits.append("")
@@ -480,10 +531,11 @@ def write_reports(
     limits.append("- **执行假设：** 收盘价入场；止损按当根 High/Low 触发并以 SL 价成交；无滑点 / funding / 流动性冲击。")
     limits.append("- **与 paper_trader 差异：** 纸交易扫描全市场 top-N（约 5 分钟），回测仅固定五币、按 1h K 线；宏观/新闻过滤两边均禁用。")
     limits.append("- **止盈：** 2026-09-10 起 paper + 回测均执行 TP（BUY high≥tp / SELL low≤tp）；同根同时触 TP+SL 时回测按保守 SL。")
-    limits.append("- **过度交易风险：** 已提高 conf/ADX 门槛并加入平仓冷却；level 模式仍可能在趋势市外反复试错。")
+    limits.append("- **过度交易风险：** v3 再叠加 DI 方向过滤与更低单仓风险；level 模式仍可能在趋势市外反复试错。")
+    limits.append("- **组合持仓上限：** paper_trader 限制 max concurrent=2；本回测五币独立账户，无法复现跨币种持仓上限。")
     limits.append("")
 
-    report = "\n".join(header) + prim_md + sens_md + "\n".join(limits)
+    report = "\n".join(header) + cmp_block + prim_md + sens_md + "\n".join(limits)
 
     # Chinese-friendly summary for /workspace/backtest-summary.md
     s = prim_stats
@@ -495,43 +547,63 @@ def write_reports(
     summary.append(f"- 窗口: {'全量~6y' if not years else f'最近{years}年'} | 主模式 `{primary_mode}` | 耗时 {elapsed_s:.1f}s")
     summary.append(
         f"- 门槛: ADX≥{ADX_STRONG_THRESHOLD}, conf≥{CONFIDENCE_THRESHOLD}, "
-        f"TP启用, cooldown={MIN_BARS_BETWEEN_TRADES}h/bars"
+        f"DI过滤, risk={RISK_PER_TRADE_PCT*100:.0f}%, SL={STOP_LOSS_ATR_MULT}×ATR, "
+        f"TP={TAKE_PROFIT_RR}:1, cooldown={MIN_BARS_BETWEEN_TRADES}h/bars, "
+        f"max_pos={MAX_CONCURRENT_POSITIONS}(paper)"
     )
     summary.append("")
-    summary.append("## 相对 v1 回测（同日，门槛 ADX≥20 conf≥0.55，无TP强制/无冷却）")
-    summary.append("")
-    summary.append("| 指标 | 改进前 (v1) | 改进后 (v2) | Δ |")
-    summary.append("|------|-------------|-------------|---|")
-    _before = {
-        "n_trades": 12723,
-        "win_rate": 0.349,
-        "total_return_pct": -100.00,
-        "avg_dd": 100.00,
-        "worst_dd": 100.00,
-        "profit_factor": 0.53,
-        "total_pnl": -45910.69,
-        "avg_bars_held": 6.7,
-        "total_final": 1.72,
-        "total_init": 50000.0,
+    # Hard-coded prior passes (same-day offline) for v1/v2/v3 comparison
+    _v1 = {
+        "n_trades": 12723, "win_rate": 0.349, "total_return_pct": -100.00,
+        "avg_dd": 100.00, "profit_factor": 0.53, "total_pnl": -45910.69,
+        "avg_bars_held": 6.7, "total_final": 1.72,
     }
-    def _delta(key, fmt, pct=False, higher_better=True):
-        b, a = _before[key], s[key]
-        d = a - b
-        if pct:
-            return f"{b*100:.1f}%", f"{a*100:.1f}%", f"{d*100:+.1f}pp"
+    _v2 = {
+        "n_trades": 4870, "win_rate": 0.367, "total_return_pct": -97.94,
+        "avg_dd": 98.19, "profit_factor": 0.63, "total_pnl": -43605.07,
+        "avg_bars_held": 7.3, "total_final": 1031.52,
+    }
+    summary.append("## v1 / v2 / v3 对比（同日离线，五币独立账户）")
+    summary.append("")
+    summary.append(
+        "| 指标 | v1 (ADX≥20 conf≥0.55) | v2 (ADX≥25 conf≥0.70 +TP+冷却) "
+        "| v3 (risk2%+DI过滤+SL1.5/TP2.5) | v3−v2 |"
+    )
+    summary.append("|------|----------------------|--------------------------------|--------------------------------|--------|")
+
+    def _fmt_cell(key, val, fmt):
+        if fmt == "pct":
+            return f"{val*100:.1f}%"
         if fmt == "pf":
-            return f"{b:.2f}", pf_str(a), f"{d:+.2f}"
+            return pf_str(val) if isinstance(val, float) else f"{val:.2f}"
         if fmt == "money":
-            return f"${b:,.2f}", f"${a:,.2f}", f"${d:+,.2f}"
+            return f"${val:,.2f}"
         if fmt == "ret":
-            return f"{b:+.2f}%", f"{a:+.2f}%", f"{d:+.2f}pp"
+            return f"{val:+.2f}%"
         if fmt == "dd":
-            return f"{b:.2f}%", f"{a:.2f}%", f"{d:+.2f}pp"
+            return f"{val:.2f}%"
         if fmt == "int":
-            return f"{int(b)}", f"{int(a)}", f"{int(d):+d}"
+            return f"{int(val)}"
         if fmt == "h":
-            return f"{b:.1f}h", f"{a:.1f}h", f"{d:+.1f}h"
-        return str(b), str(a), str(d)
+            return f"{val:.1f}h"
+        return str(val)
+
+    def _delta_v3_v2(key, fmt):
+        d = s[key] - _v2[key]
+        if fmt == "pct":
+            return f"{d*100:+.1f}pp"
+        if fmt in ("ret", "dd"):
+            return f"{d:+.2f}pp"
+        if fmt == "pf":
+            return f"{d:+.2f}"
+        if fmt == "money":
+            return f"${d:+,.2f}"
+        if fmt == "int":
+            return f"{int(d):+d}"
+        if fmt == "h":
+            return f"{d:+.1f}h"
+        return str(d)
+
     rows = [
         ("总交易数", "n_trades", "int"),
         ("胜率", "win_rate", "pct"),
@@ -542,11 +614,15 @@ def write_reports(
         ("平均持仓", "avg_bars_held", "h"),
     ]
     for label, key, fmt in rows:
-        if fmt == "pct":
-            b, a, d = _delta(key, fmt, pct=True)
-        else:
-            b, a, d = _delta(key, fmt)
-        summary.append(f"| {label} | {b} | {a} | {d} |")
+        summary.append(
+            f"| {label} | {_fmt_cell(key, _v1[key], fmt)} | {_fmt_cell(key, _v2[key], fmt)} "
+            f"| {_fmt_cell(key, s[key], fmt)} | {_delta_v3_v2(key, fmt)} |"
+        )
+    summary.append("")
+    summary.append(
+        "**v3 改动：** risk 5%→2%，杠杆 2.5→2.0，SL 2.0→1.5×ATR，TP RR 2.0→2.5，"
+        "DI方向过滤（BUY需+DI>-DI / SELL需-DI>+DI），纸交易 max 同时持仓=2。"
+    )
     summary.append("")
     summary.append("## 关键数字（主模式）")
     summary.append("")
@@ -579,15 +655,15 @@ def write_reports(
     summary.append("")
     summary.append("- 模型训练含同区间数据 → 非严格 walk-forward")
     summary.append("- 五币种独立账户；收盘入场 + HL 止损；无滑点/funding；非 top-N 扫描")
-    summary.append("- level 模式对齐纸交易；已启用 TP 出场 + 平仓冷却 + 更高 ADX/conf 门槛")
+    summary.append("- level 模式对齐纸交易；v3：TP+冷却+更高门槛 + DI方向过滤 + 更低仓位风险；max_pos=2 仅纸交易组合层（回测每币独立最多1仓）")
     summary.append("- 未停止 live_executor 纸交易进程")
     summary.append("")
 
     reports_dir = os.path.join(REPO_ROOT, "reports")
     os.makedirs(reports_dir, exist_ok=True)
-    report_path = os.path.join(reports_dir, f"backtest_{date_cst}_v2.md")
+    report_path = os.path.join(reports_dir, f"backtest_{date_cst}_v3.md")
     summary_path = "/workspace/backtest-summary.md"
-    stats_path = os.path.join(reports_dir, f"backtest_{date_cst}_v2.json")
+    stats_path = os.path.join(reports_dir, f"backtest_{date_cst}_v3.json")
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
@@ -637,7 +713,7 @@ def main():
     with open(model_path, "rb") as f:
         model = pickle.load(f)
     cd = args.cooldown if args.cooldown is not None else MIN_BARS_BETWEEN_TRADES
-    print(f"[*] Gates: ADX>={ADX_STRONG_THRESHOLD} conf>={CONFIDENCE_THRESHOLD} TP=on cooldown={cd}bars")
+    print(f"[*] Gates: ADX>={ADX_STRONG_THRESHOLD} conf>={CONFIDENCE_THRESHOLD} DI-filter TP=on cooldown={cd}bars risk={RISK_PER_TRADE_PCT} SL={STOP_LOSS_ATR_MULT} TP_RR={TAKE_PROFIT_RR}")
     print(f"[*] Symbols: {args.symbols} | years={args.years or 'full'} | mode={args.mode}")
 
     primary = run_batch(model, args.symbols, args.years, args.mode, args.cooldown)

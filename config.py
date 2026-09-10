@@ -20,16 +20,20 @@ QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
 # Old defaults: ADX_STRONG_THRESHOLD=20, CONFIDENCE_THRESHOLD=0.55
 ADX_STRONG_THRESHOLD = 25      # ADX 强趋势阈值（was 20）
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
-CONFIDENCE_THRESHOLD = 0.70    # 模型置信度阈值（was 0.55）
+CONFIDENCE_THRESHOLD = 0.75    # 模型置信度阈值（was 0.70；日更再抬）
 
 # ========================
 # 风控参数
 # ========================
-LEVERAGE = 2.5                 # 最大杠杆
-RISK_PER_TRADE_PCT = 0.05      # 单仓风险（总资金5%，测试多持仓）
-STOP_LOSS_ATR_MULT = 2.0       # 止损：2×ATR
-TAKE_PROFIT_RR = 2.0           # 止盈：2倍风险（2:1盈亏比）
+# 2026-09-10 v3: tighter risk after v2 still ~-98% equity. Old: LEVERAGE=2.5,
+# RISK_PER_TRADE_PCT=0.05, STOP_LOSS_ATR_MULT=2.0, TAKE_PROFIT_RR=2.0
+LEVERAGE = 2.0                 # 最大杠杆（was 2.5）
+RISK_PER_TRADE_PCT = 0.02      # 单仓风险 2%（was 0.05）
+STOP_LOSS_ATR_MULT = 1.5       # 止损：1.5×ATR（was 2.0，收紧无效波动）
+TAKE_PROFIT_RR = 2.5           # 止盈：2.5倍风险（was 2.0，补偿~37%胜率）
 TRAILING_STOP_ATR = 1.5        # 移动止损：1.5×ATR
+MAX_CONCURRENT_POSITIONS = 2   # 最大同时持仓数（组合层）
+MAX_HOLD_HOURS = 24            # 最长持仓（小时），超时市价平（对齐预测窗口）
 
 # ========================
 # 交易冷却（减少翻炒）

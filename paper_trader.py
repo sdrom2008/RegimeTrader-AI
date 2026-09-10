@@ -9,6 +9,7 @@ import json
 import datetime
 import time
 import logging
+import warnings
 import pandas as pd
 import ccxt
 import pickle
@@ -34,7 +35,8 @@ from config import (
     STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR, TRAILING_STOP_ATR,
     SCAN_LIMIT, STATE_FILE, MODEL_FILE, ENABLE_FUNDING_FILTER,
     FUNDING_RATE_THRESHOLD, TRADING_SYMBOLS, resolve_model_file,
-    COOLDOWN_HOURS, MIN_BARS_BETWEEN_TRADES,
+    COOLDOWN_HOURS, MIN_BARS_BETWEEN_TRADES, MAX_CONCURRENT_POSITIONS,
+    MAX_HOLD_HOURS,
 )
 # from news_fetcher import fetch_all_news
 # from sentiment_analyzer import SentimentAnalyzer
@@ -42,6 +44,13 @@ from config import (
 
 # 初始化日志
 logger = setup_logger()
+
+# Quiet sklearn "X does not have valid feature names" on every predict
+warnings.filterwarnings(
+    "ignore",
+    message="X does not have valid feature names",
+    category=UserWarning,
+)
 
 DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
 
@@ -156,6 +165,15 @@ def scan_and_trade_v2():
                 elif price <= sl:
                     exit_price = sl
                     exit_reason = 'SL/TRAIL'
+                else:
+                    try:
+                        et = datetime.datetime.fromisoformat(str(pos.get('entry_time','')).replace('Z',''))
+                        hold_h = (now_utc - et).total_seconds() / 3600.0
+                        if hold_h >= float(MAX_HOLD_HOURS):
+                            exit_price = price
+                            exit_reason = 'MAX_HOLD'
+                    except Exception:
+                        pass
                 if exit_price is not None:
                     pnl = (exit_price - entry) * amount
                     fee = (exit_price * amount) * fee_rate
@@ -175,6 +193,15 @@ def scan_and_trade_v2():
                 elif price >= sl:
                     exit_price = sl
                     exit_reason = 'SL/TRAIL'
+                else:
+                    try:
+                        et = datetime.datetime.fromisoformat(str(pos.get('entry_time','')).replace('Z',''))
+                        hold_h = (now_utc - et).total_seconds() / 3600.0
+                        if hold_h >= float(MAX_HOLD_HOURS):
+                            exit_price = price
+                            exit_reason = 'MAX_HOLD'
+                    except Exception:
+                        pass
                 if exit_price is not None:
                     pnl = (entry - exit_price) * amount
                     fee = (exit_price * amount) * fee_rate
@@ -295,13 +322,23 @@ def scan_and_trade_v2():
             confidence = probs[pred]
             adx = latest['ADX']
 
-            # 信号判断
+            # 信号判断 + DI 方向过滤（BUY 需 +DI>-DI；SELL 需 -DI>+DI）
+            plus_di = float(latest['+DI'])
+            minus_di = float(latest['-DI'])
             signal = None
             if adx >= ADX_STRONG_THRESHOLD and confidence >= CONFIDENCE_THRESHOLD:
-                if pred == 2:
+                if pred == 2 and plus_di > minus_di:
                     signal = "BUY"
-                elif pred == 0:
+                elif pred == 0 and minus_di > plus_di:
                     signal = "SELL"
+
+            # 最大同时持仓限制
+            if signal and len(positions) >= MAX_CONCURRENT_POSITIONS:
+                logger.debug(
+                    f"Skip {symbol} {signal}: max concurrent positions "
+                    f"({MAX_CONCURRENT_POSITIONS})"
+                )
+                signal = None
 
             if signal:
                 entry_price = latest['Close']
