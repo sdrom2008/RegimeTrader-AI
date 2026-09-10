@@ -106,7 +106,20 @@ def scan_and_trade_v2():
     logger.info(f"Balance: ${balance:.2f} | Positions: {len(positions)}")
 
     fee_rate = 0.0004
-    exchange = ccxt.binance({'enableRateLimit': True})
+    # 本机访问 api.binance.com 常遇 451；公共行情改走 data-api.binance.vision（仅 spot）
+    exchange = ccxt.binance({
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'spot',
+            'fetchMarkets': ['spot'],
+            'fetchCurrencies': False,
+        },
+    })
+    _pub = 'https://data-api.binance.vision'
+    exchange.urls['api']['public'] = f'{_pub}/api/v3'
+    exchange.urls['api']['private'] = f'{_pub}/api/v3'
+    exchange.urls['api']['v1'] = f'{_pub}/api/v1'
+
 
     # 1) 更新持仓
     closed_positions = []
