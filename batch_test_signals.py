@@ -5,7 +5,7 @@
 import os, sys, datetime, ccxt, pandas as pd, pickle
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2
+from strategy_v2_quantile import prepare_features_v2
 
 MODEL_FILE = 'regime_model_v2_quantile.pkl'
 model = pickle.load(open(MODEL_FILE, 'rb'))

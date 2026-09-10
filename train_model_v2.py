@@ -12,7 +12,7 @@ import pickle
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from regime_trader_ai_product.strategy_v2 import calculate_features, label_data_3class
+from strategy_v2 import calculate_features, label_data_3class
 
 DATA_FILE = 'data/BTC_USDT_1h_2y_features.csv'
 MODEL_OUTPUT = 'regime_model_v2.pkl'

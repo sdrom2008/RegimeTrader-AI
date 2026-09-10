@@ -7,20 +7,34 @@ import pickle
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2 as calculate_features
-from regime_trader_ai_product.config import (
+from strategy_v2_quantile import prepare_features_v2 as calculate_features
+from config import (
     ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD,
     CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
     STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR
 )
 
-MODEL_FILE = 'regime_model_v2.pkl'
+from config import resolve_model_file
+
+FEATURE_COLS = [
+    'ADX', '+DI', '-DI', 'DI_diff',
+    'MACD_hist', 'MACD_hist_cross_up',
+    'RSI', 'ATR',
+    'Price_vs_EMA200',
+    'Volume_Change_Ratio',
+    'EMA_50', 'EMA_200',
+    'ADX_strong', 'ADX_weak',
+    '+DI_cross_above_-DI', '-DI_cross_above_+DI',
+    'MACD_hist_positive',
+    'Price_std_20', 'ATR_ratio', 'Drawdown_20', 'RSI_dev',
+]
 
 def main():
-    # 加载模型
-    with open(MODEL_FILE, 'rb') as f:
+    # 加载模型（multi_full → quantile fallback）
+    model_path = resolve_model_file()
+    with open(model_path, 'rb') as f:
         model = pickle.load(f)
-    print("[+] Model loaded")
+    print(f"[+] Model loaded from {model_path}")
 
     # 获取 BTC 1h 数据
     exchange = ccxt.binance({'enableRateLimit': True})
@@ -35,8 +49,7 @@ def main():
     latest = df_feat.iloc[-1]
 
     # 提取特征（必须与训练时完全一致）
-    from regime_trader_ai_product.strategy_v2_constants import get_feature_columns
-    feature_cols = get_feature_columns()
+    feature_cols = FEATURE_COLS
     X = latest[feature_cols].values.reshape(1, -1)
 
     # 预测

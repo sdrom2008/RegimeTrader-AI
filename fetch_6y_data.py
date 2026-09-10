@@ -1,6 +1,10 @@
 """
 下载 BTC/USDT 6年1小时K线数据并生成特征
 使用 ccxt 从 Binance 获取
+
+Note: api.binance.com may return 451 in some regions.
+Prefer fetch_6y_robust.py which uses data-api.binance.vision fallback
+and supports multi-symbol resume/checkpoint.
 """
 
 import ccxt

@@ -18,20 +18,26 @@ import requests
 import feedparser
 from bs4 import BeautifulSoup
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from regime_trader_ai_product.logger_v2 import setup_logger
-from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2
-from regime_trader_ai_product.config import (
+from logger_v2 import setup_logger
+from strategy_v2_quantile import prepare_features_v2
+from config import (
     ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD,
     CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
     STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR, TRAILING_STOP_ATR,
     SCAN_LIMIT, STATE_FILE, MODEL_FILE, ENABLE_FUNDING_FILTER,
-    FUNDING_RATE_THRESHOLD, TRADING_SYMBOLS
+    FUNDING_RATE_THRESHOLD, TRADING_SYMBOLS, resolve_model_file
 )
-# from regime_trader_ai_product.news_fetcher import fetch_all_news
-# from regime_trader_ai_product.sentiment_analyzer import SentimentAnalyzer
-# from regime_trader_ai_product.risk_controller import RiskController
+# from news_fetcher import fetch_all_news
+# from sentiment_analyzer import SentimentAnalyzer
+# from risk_controller import RiskController
 
 # 初始化日志
 logger = setup_logger()
@@ -55,9 +61,9 @@ def send_whatsapp_alert(message):
         return
     safe_msg = message.replace("'", "'\\''")
     target = "+8613908412393"
-    openclaw_path = "/home/sdrom2008/.npm-global/bin/openclaw"
+    openclaw_path = shutil.which("openclaw") or os.path.expanduser("~/.npm-global/bin/openclaw")
     if not os.path.exists(openclaw_path):
-        openclaw_path = shutil.which("openclaw") or "openclaw"
+        openclaw_path = "openclaw"
     cmd = f"{openclaw_path} message send --channel whatsapp --target '{target}' --message '{safe_msg}'"
     try:
         result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
@@ -80,13 +86,17 @@ def scan_and_trade_v2():
     logger.info(f"🚀 RegimeTrader AI v2 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"{'='*60}")
 
-    # 加载模型
+    # 加载模型（优先 multi_full，缺失则回退 quantile）
     try:
-        with open(MODEL_FILE, 'rb') as f:
+        model_path = resolve_model_file()
+        with open(model_path, 'rb') as f:
             model = pickle.load(f)
-        logger.info("Model loaded")
+        logger.info(f"Model loaded from {model_path}")
     except Exception as e:
-        logger.error(f"Model not found: {e}. Please run: python train_model_v2_quantile.py")
+        logger.error(
+            f"Model not found: {e}. Train with: python train_model_v2_multi.py "
+            f"or python train_model_v2_quantile.py"
+        )
         return
 
     # 加载状态

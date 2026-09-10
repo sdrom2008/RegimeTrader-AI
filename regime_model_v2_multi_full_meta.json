@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-03-24T07:25:23.860582",
+  "trained_at": "2026-09-10T06:17:45.134542+00:00",
   "symbols": [
     "BTC",
     "ETH",
@@ -7,96 +7,130 @@
     "SOL",
     "XRP"
   ],
-  "num_samples": 259120,
+  "num_samples": 262595,
   "class_distribution": [
-    25881,
-    214925,
-    18314
+    25873,
+    217485,
+    19237
   ],
+  "accuracy": 0.7164835583312706,
+  "classification_report": {
+    "Down (0)": {
+      "precision": 0.354012729533982,
+      "recall": 0.9350724637681159,
+      "f1-score": 0.5135852260666525,
+      "support": 5175.0
+    },
+    "Osc (1)": {
+      "precision": 0.9837984102824285,
+      "recall": 0.668689794698485,
+      "f1-score": 0.7962004872573978,
+      "support": 43497.0
+    },
+    "Up (2)": {
+      "precision": 0.3989229940764674,
+      "recall": 0.9628281778008838,
+      "f1-score": 0.5641181845872677,
+      "support": 3847.0
+    },
+    "accuracy": 0.7164835583312706,
+    "macro avg": {
+      "precision": 0.5789113779642926,
+      "recall": 0.855530145422495,
+      "f1-score": 0.6246346326371061,
+      "support": 52519.0
+    },
+    "weighted avg": {
+      "precision": 0.8789000568480991,
+      "recall": 0.7164835583312706,
+      "f1-score": 0.751352820793183,
+      "support": 52519.0
+    }
+  },
   "feature_importance": [
     {
       "feature": "DI_diff",
-      "importance": 0.27025240280456214
+      "importance": 0.31725572434966626
     },
     {
       "feature": "ADX",
-      "importance": 0.18826320835029878
+      "importance": 0.21246349263822015
     },
     {
       "feature": "-DI",
-      "importance": 0.09029234623242433
-    },
-    {
-      "feature": "+DI",
-      "importance": 0.07488195603252988
+      "importance": 0.0966820934469055
     },
     {
       "feature": "ADX_weak",
-      "importance": 0.06278503948076207
+      "importance": 0.0899760244833483
     },
     {
-      "feature": "Price_vs_EMA200",
-      "importance": 0.03450698023064898
+      "feature": "+DI",
+      "importance": 0.0834350002226818
     },
     {
       "feature": "ADX_strong",
-      "importance": 0.03356514356297043
+      "importance": 0.03756029997093943
     },
     {
-      "feature": "MACD_hist",
-      "importance": 0.02529381555167825
-    },
-    {
-      "feature": "Price_std_20",
-      "importance": 0.024158568989913552
-    },
-    {
-      "feature": "RSI",
-      "importance": 0.023126583071206536
+      "feature": "Price_vs_EMA200",
+      "importance": 0.021620850078891158
     },
     {
       "feature": "RSI_dev",
-      "importance": 0.02311629722024916
+      "importance": 0.015293655748354605
     },
     {
-      "feature": "ATR_ratio",
-      "importance": 0.023048153025006332
+      "feature": "RSI",
+      "importance": 0.014349715318419092
     },
     {
-      "feature": "Volume_Change_Ratio",
-      "importance": 0.02201917102957971
-    },
-    {
-      "feature": "Drawdown_20",
-      "importance": 0.021944693091472553
-    },
-    {
-      "feature": "EMA_200",
-      "importance": 0.021057807591786
-    },
-    {
-      "feature": "EMA_50",
-      "importance": 0.02081585186928678
-    },
-    {
-      "feature": "ATR",
-      "importance": 0.02077772400784834
+      "feature": "MACD_hist",
+      "importance": 0.01361455357514556
     },
     {
       "feature": "+DI_cross_above_-DI",
-      "importance": 0.010063328085711101
+      "importance": 0.01281609560819242
+    },
+    {
+      "feature": "Price_std_20",
+      "importance": 0.012384939065837267
+    },
+    {
+      "feature": "Drawdown_20",
+      "importance": 0.011616035772371832
+    },
+    {
+      "feature": "ATR_ratio",
+      "importance": 0.010361872454391406
+    },
+    {
+      "feature": "Volume_Change_Ratio",
+      "importance": 0.010188156282879219
+    },
+    {
+      "feature": "EMA_50",
+      "importance": 0.010111515130440986
+    },
+    {
+      "feature": "EMA_200",
+      "importance": 0.009985494601046412
+    },
+    {
+      "feature": "ATR",
+      "importance": 0.009406505973334294
     },
     {
       "feature": "-DI_cross_above_+DI",
-      "importance": 0.00631381483374781
+      "importance": 0.007359757309527234
     },
     {
       "feature": "MACD_hist_positive",
-      "importance": 0.0028271333172204876
+      "importance": 0.0033136307955734705
     },
     {
       "feature": "MACD_hist_cross_up",
-      "importance": 0.0008899816210967141
+      "importance": 0.00020458717383382258
     }
   ],
   "feature_list": [
@@ -124,7 +158,10 @@
   ],
   "config": {
     "n_estimators": 300,
-    "class_weight": "balanced_subsample",
+    "max_depth": 18,
+    "min_samples_split": 15,
+    "min_samples_leaf": 8,
+    "class_weight": "balanced",
     "look_forward_candles": 24,
     "quantile_threshold": 0.6
   }

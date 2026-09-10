@@ -29,5 +29,4 @@ config/.env
 *~
 *.pkl
 test_suite.py
-train_model_v2_multi.py
 paper_trader.py.bak*

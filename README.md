@@ -16,7 +16,7 @@ License: MIT
 
 1. 克隆项目并进入目录：
 ```bash
-cd regime_trader_ai_product/
+cd RegimeTrader-AI/
 ```
 
 2. 创建虚拟环境并安装依赖：
@@ -34,11 +34,18 @@ cp config/.env.example .env
 # 编辑 .env，填入你的 Binance API Key/Secret
 ```
 
-4. 准备 AI 模型：
+4. 准备数据与 AI 模型：
 ```bash
-# v2 模型（推荐）：多币种三分类
-# 下载 regime_model_v2_multi_full.pkl 到项目根目录
-# 已在项目根目录创建符号链接
+# 数据：6 年 1h OHLCV（BTC/ETH/BNB/SOL/XRP）放在 data/*_USDT_1h_6y.csv
+# 拉取（推荐稳健源 data-api.binance.vision）：
+python fetch_6y_robust.py
+# 或单币种：python fetch_6y_data.py
+
+# 训练多币种模型（推荐，输出 regime_model_v2_multi_full.pkl）：
+python train_model_v2_multi.py
+# BTC-only 分位数模型：
+python train_model_v2_quantile.py
+# 模型名：multi_full = 五币种；quantile = BTC-only。加载时优先 multi_full，缺失则回退 quantile。
 ```
 
 5. 初始化模拟状态：
@@ -75,7 +82,7 @@ BINANCE_API_SECRET=your_secret
 
 ### 模拟盘（Dry Run）
 ```bash
-DRY_RUN=1 python -m regime_trader_ai_product.live_executor
+DRY_RUN=1 python live_executor.py
 ```
 - 使用本地 `paper_trade_state.json` 管理资金
 - 不发起真实订单
@@ -83,7 +90,7 @@ DRY_RUN=1 python -m regime_trader_ai_product.live_executor
 
 ### 实盘（Live）
 ```bash
-DRY_RUN=0 python -m regime_trader_ai_product.live_executor
+DRY_RUN=0 python live_executor.py
 ```
 - 连接 Binance 期货 API
 - 自动下单、设止损

@@ -2,6 +2,8 @@
 v2 策略配置文件（优化后）
 """
 
+import os
+
 # ========================
 # 市场与扫描参数
 # ========================
@@ -38,9 +40,38 @@ MIN_MARKET_CAP = 100_000_000   # 最小市值（USDT，可选）
 # ========================
 # 文件路径
 # ========================
+# Primary trained multi-symbol model. If missing, resolve_model_file() falls back
+# to regime_model_v2_quantile.pkl (BTC-only quantile). Importing this module
+# never requires the pkl to exist.
 MODEL_FILE = 'regime_model_v2_multi_full.pkl'
+MODEL_FILE_FALLBACK = 'regime_model_v2_quantile.pkl'
 STATE_FILE = 'paper_trade_state_v2.json'  # v2 独立状态文件
 LOG_FILE = 'logs/v2_trader.log'
+
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_model_file(preferred=None):
+    """Return path to a usable model file.
+
+    Prefers MODEL_FILE (multi_full), then MODEL_FILE_FALLBACK (quantile).
+    Does not raise if neither exists — callers should handle FileNotFoundError
+    when opening the returned path.
+    """
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    candidates.extend([MODEL_FILE, MODEL_FILE_FALLBACK])
+    seen = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        path = name if os.path.isabs(name) else os.path.join(_REPO_ROOT, name)
+        if os.path.exists(path):
+            return path
+    # Default to preferred/multi path for clearer error messages on open()
+    return os.path.join(_REPO_ROOT, preferred or MODEL_FILE)
 
 # ========================
 # 执行器参数

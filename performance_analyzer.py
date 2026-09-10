@@ -12,10 +12,10 @@ from pathlib import Path
 import shutil
 
 WORKSPACE = Path(__file__).parent
-# 支持 v1 和 v2 状态文件
+# 支持 v1 和 v2 状态文件（repo-relative）
 import os
-STATE_FILE_V1 = Path('/home/sdrom2008/.openclaw/workspace/paper_trade_state.json')
-STATE_FILE_V2 = Path('/home/sdrom2008/.openclaw/workspace/regime_trader_ai_product/paper_trade_state_v2.json')
+STATE_FILE_V1 = WORKSPACE / 'paper_trade_state.json'
+STATE_FILE_V2 = WORKSPACE / 'paper_trade_state_v2.json'
 STATE_FILE = Path(os.environ.get('STATE_FILE', str(STATE_FILE_V2 if STATE_FILE_V2.exists() else STATE_FILE_V1)))
 LOGS_DIR = WORKSPACE / 'logs' / 'performance'
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -215,7 +215,7 @@ def send_whatsapp_alert(message):
     print(f"[WhatsApp] {message}")
     safe_msg = message.replace("'", "'\\''")
     target_number = "+8613908412393"
-    openclaw_path = "/home/sdrom2008/.npm-global/bin/openclaw"
+    openclaw_path = shutil.which("openclaw") or os.path.expanduser("~/.npm-global/bin/openclaw")
     # Verify the executable exists
     if not os.path.exists(openclaw_path):
         openclaw_path = shutil.which("openclaw") or "openclaw"

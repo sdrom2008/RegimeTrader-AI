@@ -10,9 +10,9 @@ from sklearn.metrics import classification_report, accuracy_score
 import pickle
 import os
 import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from regime_trader_ai_product.strategy_v2_quantile import prepare_features_v2, label_data_3class_quantile
+from strategy_v2_quantile import prepare_features_v2, label_data_3class_quantile
 
 # 数据文件（优先6年，否则用2年）
 DATA_FILE_6Y = 'data/BTC_USDT_1h_6y.csv'

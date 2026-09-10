@@ -5,7 +5,7 @@
 ## 📦 交付内容
 
 - `regimetrader_ai_product_YYYYMMDD_HHMM.tar.gz` - 完整产品包
-- 内含 `regime_trader_ai_product/` 目录及所有源代码、文档、配置示例
+- 内含项目目录及所有源代码、文档、配置示例
 
 ---
 
@@ -14,7 +14,7 @@
 ### 1. 解压
 ```bash
 tar -xzf regimetrader_ai_product_*.tar.gz
-cd regime_trader_ai_product
+cd RegimeTrader-AI
 ```
 
 ### 2. 创建虚拟环境
@@ -39,14 +39,17 @@ cp config/.env.example .env
 nano .env
 ```
 
-### 5. 准备 AI 模型
-确保 `regime_model.pkl` 文件存在（已包含在包内，或指向外部链接）。默认已配置符号链接。
+### 5. 数据与 AI 模型
+- 历史数据：`data/*_USDT_1h_6y.csv`（约 6 年 1h）。获取：`python fetch_6y_robust.py`（优先 `data-api.binance.vision`）。
+- 训练多币种模型：`python train_model_v2_multi.py` → `regime_model_v2_multi_full.pkl` + `_meta.json`
+- BTC 分位数模型：`python train_model_v2_quantile.py` → `regime_model_v2_quantile.pkl`
+- 运行时优先加载 `regime_model_v2_multi_full.pkl`，缺失则回退 `regime_model_v2_quantile.pkl`。
 
 ### 6. 初始化模拟状态
 ```bash
-DRY_RUN=1 python -m regime_trader_ai_product.live_executor
+DRY_RUN=1 python live_executor.py
 ```
-首次运行会创建 `paper_trade_state.json`（初始资金 $10,000）。
+首次运行会创建 `paper_trade_state_v2.json`（初始资金 $10,000）。
 
 ### 7. 查看绩效报告
 - 自动生成：每小时第5分钟运行 `performance_analyzer.py`
@@ -77,7 +80,7 @@ SCAN_INTERVAL = 300             # 扫描间隔(秒)
 
 ### 模拟盘（推荐先测试）
 ```bash
-DRY_RUN=1 python -m regime_trader_ai_product.live_executor
+DRY_RUN=1 python live_executor.py
 ```
 - 单次运行，不常驻
 - 查看输出确认无错误
@@ -88,14 +91,14 @@ crontab -e
 ```
 添加：
 ```cron
-*/5 * * * * cd /path/to/regime_trader_ai_product && DRY_RUN=1 /path/to/venv/bin/python -m regime_trader_ai_product.live_executor >> logs/live_executor_cron.log 2>&1
+*/5 * * * * cd /path/to/RegimeTrader-AI && DRY_RUN=1 /path/to/venv/bin/python live_executor.py >> logs/live_executor_cron.log 2>&1
 ```
 - 每5分钟自动扫描
 - 日志输出到 `logs/live_executor_cron.log`
 
 ### 实盘运行（谨慎！）
 ```bash
-DRY_RUN=0 python -m regime_trader_ai_product.live_executor
+DRY_RUN=0 python live_executor.py
 ```
 - 使用真实 Binance 账户
 - 务必先小资金测试

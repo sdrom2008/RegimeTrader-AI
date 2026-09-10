@@ -10,6 +10,12 @@ import time
 import datetime
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # 确保导入当前目录
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
