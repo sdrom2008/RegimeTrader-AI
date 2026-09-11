@@ -9,7 +9,7 @@ import os
 # ========================
 SCAN_LIMIT = 60                # 每次扫描前N个流动性币种（总池）
 # Lock to train-set symbols (multi_full model). Empty list = scan top SCAN_LIMIT.
-TRADING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']
+TRADING_SYMBOLS = ['ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']  # WF ex-BTC PF≈1.27; BTC OOS PF≈0.41 暂踢出纸面
 MIN_VOLUME_RANK = 20           # 最小交易量排名（可加）
 LOOK_FORWARD_CANDLES = 24      # 预测未来N根K线（24h）
 QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
@@ -120,7 +120,7 @@ SLIPPAGE_ATR_FRAC = 0.0     # 可选：>0 时再加 atr*frac 不利滑点；0=�
 # ========================
 # STRATEGY_V4 observe-ready 包（文档见 STRATEGY_V4.md）
 # ========================
-# Universe: TRADING_SYMBOLS = BTC/ETH/BNB/SOL/XRP（训练集五币）
+# Universe: TRADING_SYMBOLS = ETH/BNB/SOL/XRP（纸面踢 BTC；模型仍 multi_full 五币合训）
 # Timeframe: 1h K；Scan: SCAN_INTERVAL=300s（5 min）
 # SIGNAL_OBSERVE_MODE=True（仅 journal；翻 False 即开纸仓）
 # Gates: CONFIDENCE_THRESHOLD=0.80, ADX_STRONG_THRESHOLD=25, DI 方向过滤保留
