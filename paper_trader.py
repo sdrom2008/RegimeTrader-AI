@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from logger_v2 import setup_logger
 from strategy_v2_quantile import prepare_features_v2
 from config import (
-    ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD,
+    ADX_STRONG_THRESHOLD, ADX_WEAK_THRESHOLD, MIN_DI_DIFF,
     CONFIDENCE_THRESHOLD, LEVERAGE, RISK_PER_TRADE_PCT,
     STOP_LOSS_ATR_MULT, TAKE_PROFIT_RR, TRAILING_STOP_ATR,
     SCAN_LIMIT, STATE_FILE, MODEL_FILE, ENABLE_FUNDING_FILTER,
@@ -39,6 +39,7 @@ from config import (
     COOLDOWN_HOURS, MIN_BARS_BETWEEN_TRADES, MAX_CONCURRENT_POSITIONS,
     MAX_HOLD_HOURS,
     SIGNAL_OBSERVE_MODE, SIGNAL_JOURNAL_FILE,
+    ENTRY_ON_CLOSED_1H_ONLY,
     SLIPPAGE_BPS, SLIPPAGE_ATR_FRAC,
     TRAIL_ACTIVATE_R, MAX_MARGIN_PCT_OF_EQUITY,
 )
@@ -178,6 +179,7 @@ def scan_and_trade_v2():
     state = load_state()
     balance = state['balance']
     positions = state['positions']
+    signal_bars = state.setdefault('signal_bars', {})  # symbol -> last closed 1h bar iso used for entry
     logger.info(f"Balance: ${balance:.2f} | Positions: {len(positions)}")
 
     fee_rate = 0.0004
@@ -356,11 +358,22 @@ def scan_and_trade_v2():
             if len(df) < 200:
                 continue
 
+            # 1h 模型：默认丢掉未收盘的最后一根，用已收盘 K 做特征/置信度
+            bar_for_signal = df.index[-1]
+            if ENTRY_ON_CLOSED_1H_ONLY and len(df) >= 2:
+                last_open = df.index[-1].to_pydatetime()
+                # Binance 1h bar open time; treat as forming if now < open+1h
+                if (now_utc - last_open).total_seconds() < 3600 - 5:
+                    df = df.iloc[:-1]
+                    bar_for_signal = df.index[-1]
+
             df_feat = prepare_features_v2(df.copy())
             if df_feat.empty:
                 continue
 
             latest = df_feat.iloc[-1]
+            bar_for_signal = latest.name
+            bar_key = bar_for_signal.isoformat() if hasattr(bar_for_signal, 'isoformat') else str(bar_for_signal)
             features = [
                 'ADX', '+DI', '-DI', 'DI_diff',
                 'MACD_hist', 'MACD_hist_cross_up',
@@ -386,9 +399,11 @@ def scan_and_trade_v2():
             close_px = float(latest['Close'])
             class_name = CLASS_NAMES.get(pred, str(pred))
 
+            di_abs = abs(float(plus_di) - float(minus_di))
             gates_passed = (
                 adx >= ADX_STRONG_THRESHOLD
                 and confidence >= CONFIDENCE_THRESHOLD
+                and di_abs >= float(MIN_DI_DIFF)
             )
             proposed_signal = None
             if gates_passed:
@@ -413,6 +428,7 @@ def scan_and_trade_v2():
                 'close': close_px,
                 'proposed_signal': proposed_signal,
                 'gates_passed': entry_gates_ok,
+                'closed_1h_bar': bar_key if ENTRY_ON_CLOSED_1H_ONLY else None,
                 'adx_conf_ok': gates_passed,
                 'observe_mode': bool(SIGNAL_OBSERVE_MODE),
             })
@@ -438,6 +454,15 @@ def scan_and_trade_v2():
             if signal and not can_open_new:
                 logger.debug(f"Skip {symbol} {signal}: cash/equity guard")
                 signal = None
+
+
+            # 同一根已收盘 1h K 只评估/开仓一次（5min 扫描去重）
+            if signal and ENTRY_ON_CLOSED_1H_ONLY:
+                if signal_bars.get(symbol) == bar_key:
+                    signal = None
+                elif not SIGNAL_OBSERVE_MODE:
+                    # reserve bar on actual open below; mark when we attempt entry
+                    pass
 
             if signal and SIGNAL_OBSERVE_MODE:
                 logger.info(
@@ -513,6 +538,8 @@ def scan_and_trade_v2():
                     'confidence': confidence
                 }
                 positions[symbol] = pos
+                if ENTRY_ON_CLOSED_1H_ONLY:
+                    signal_bars[symbol] = bar_key
                 new_entries.append(f"{symbol} {signal} @{entry_price:.4f} SL:{sl_price:.4f}")
                 logger.info(f"NEW {signal} {symbol} @{entry_price:.4f} | ATR:{atr:.4f} Amount:{amount:.4f}")
 
@@ -523,6 +550,7 @@ def scan_and_trade_v2():
     state['balance'] = balance
     state['positions'] = positions
     state['cooldowns'] = cooldowns
+    state['signal_bars'] = signal_bars
     save_state(state)
 
     # 5) 输出摘要

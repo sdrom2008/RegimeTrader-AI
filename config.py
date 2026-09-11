@@ -19,10 +19,11 @@ QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
 # ========================
 # 2026-09-10: raised after disastrous offline backtest (WR~35%, PF~0.53, ~-100%).
 # Old defaults: ADX_STRONG_THRESHOLD=20, CONFIDENCE_THRESHOLD=0.55
-ADX_STRONG_THRESHOLD = 25      # ADX 强趋势阈值（was 20）
+ADX_STRONG_THRESHOLD = 35      # edge切片：强趋势才开枪
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
+MIN_DI_DIFF = 15.0             # |+DI - -DI| 最小差（强方向）
 # CONFIDENCE_THRESHOLD = 0.75  # 模型置信度阈值（was 0.70；日更再抬）
-CONFIDENCE_THRESHOLD = 0.80    # raised for logged "actionable" signals (was 0.75)
+CONFIDENCE_THRESHOLD = 0.85    # edge切片候选：少开高打
 
 # ========================
 # 信号观察模式（不新开仓，只记 journal 评估准确率）
@@ -31,18 +32,26 @@ SIGNAL_OBSERVE_MODE = False  # 收集真实纸交易样本；勿长期空转观�
 SIGNAL_JOURNAL_FILE = 'logs/signal_journal.jsonl'
 
 # ========================
+# 周期对齐（1h 模型 + 5min 扫描）
+# ========================
+# 模型/特征按 1h 训练；SCAN_INTERVAL=300 只负责盯仓。
+# True：开仓/信号只用「已收盘」的 1h K，每根收盘棒最多评估一次，避免未收盘棒 conf 乱晃。
+ENTRY_ON_CLOSED_1H_ONLY = True
+
+
+# ========================
 # 风控参数
 # ========================
 # 2026-09-10 v3: tighter risk after v2 still ~-98% equity. Old: LEVERAGE=2.5,
 # RISK_PER_TRADE_PCT=0.05, STOP_LOSS_ATR_MULT=2.0, TAKE_PROFIT_RR=2.0
 LEVERAGE = 2.0                 # 纸交易杠杆封顶 2
-RISK_PER_TRADE_PCT = 0.02      # 2% 单仓风险（对齐 STRATEGY_V4）
+RISK_PER_TRADE_PCT = 0.02      # 单枪 2%：打中要有体感，打错可活
 STOP_LOSS_ATR_MULT = 1.5       # 止损：1.5×ATR（was 2.0，收紧无效波动）
 TAKE_PROFIT_RR = 2.5           # 止盈：2.5倍风险（was 2.0，补偿~37%胜率）
 TRAILING_STOP_ATR = 1.5        # 移动止损：1.5×ATR
-TRAIL_ACTIVATE_R = 1.0         # 浮盈达 1R 后才启动移动止损，并将 SL 抬到至少保本
+TRAIL_ACTIVATE_R = 99.0        # 近似关闭 trail（切片显示关 trail 更赚）；靠 TP/SL/MAX_HOLD
 MAX_MARGIN_PCT_OF_EQUITY = 0.40  # 单仓保证金上限（占权益），避免一笔吃光现金
-MAX_CONCURRENT_POSITIONS = 2   # 组合层最多 2 仓（五币宇宙）
+MAX_CONCURRENT_POSITIONS = 2   # 同时最多 2 枪，避免手续费稀释
 MAX_HOLD_HOURS = 24            # 最长持仓（小时），超时市价平（对齐预测窗口）
 
 # ========================
