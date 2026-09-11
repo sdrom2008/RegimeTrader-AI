@@ -8,7 +8,8 @@ import os
 # 市场与扫描参数
 # ========================
 SCAN_LIMIT = 60                # 每次扫描前N个流动性币种（总池）
-TRADING_SYMBOLS = []           # 空列表 = 扫描全部币种（放开白名单）
+# Lock to train-set symbols (multi_full model). Empty list = scan top SCAN_LIMIT.
+TRADING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']
 MIN_VOLUME_RANK = 20           # 最小交易量排名（可加）
 LOOK_FORWARD_CANDLES = 24      # 预测未来N根K线（24h）
 QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
@@ -20,19 +21,28 @@ QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
 # Old defaults: ADX_STRONG_THRESHOLD=20, CONFIDENCE_THRESHOLD=0.55
 ADX_STRONG_THRESHOLD = 25      # ADX 强趋势阈值（was 20）
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
-CONFIDENCE_THRESHOLD = 0.75    # 模型置信度阈值（was 0.70；日更再抬）
+# CONFIDENCE_THRESHOLD = 0.75  # 模型置信度阈值（was 0.70；日更再抬）
+CONFIDENCE_THRESHOLD = 0.80    # raised for logged "actionable" signals (was 0.75)
+
+# ========================
+# 信号观察模式（不新开仓，只记 journal 评估准确率）
+# ========================
+SIGNAL_OBSERVE_MODE = False  # 收集真实纸交易样本；勿长期空转观察
+SIGNAL_JOURNAL_FILE = 'logs/signal_journal.jsonl'
 
 # ========================
 # 风控参数
 # ========================
 # 2026-09-10 v3: tighter risk after v2 still ~-98% equity. Old: LEVERAGE=2.5,
 # RISK_PER_TRADE_PCT=0.05, STOP_LOSS_ATR_MULT=2.0, TAKE_PROFIT_RR=2.0
-LEVERAGE = 2.0                 # 最大杠杆（was 2.5）
-RISK_PER_TRADE_PCT = 0.02      # 单仓风险 2%（was 0.05）
+LEVERAGE = 2.0                 # 纸交易杠杆封顶 2
+RISK_PER_TRADE_PCT = 0.02      # 2% 单仓风险（对齐 STRATEGY_V4）
 STOP_LOSS_ATR_MULT = 1.5       # 止损：1.5×ATR（was 2.0，收紧无效波动）
 TAKE_PROFIT_RR = 2.5           # 止盈：2.5倍风险（was 2.0，补偿~37%胜率）
 TRAILING_STOP_ATR = 1.5        # 移动止损：1.5×ATR
-MAX_CONCURRENT_POSITIONS = 2   # 最大同时持仓数（组合层）
+TRAIL_ACTIVATE_R = 1.0         # 浮盈达 1R 后才启动移动止损，并将 SL 抬到至少保本
+MAX_MARGIN_PCT_OF_EQUITY = 0.40  # 单仓保证金上限（占权益），避免一笔吃光现金
+MAX_CONCURRENT_POSITIONS = 2   # 组合层最多 2 仓（五币宇宙）
 MAX_HOLD_HOURS = 24            # 最长持仓（小时），超时市价平（对齐预测窗口）
 
 # ========================
@@ -89,4 +99,23 @@ def resolve_model_file(preferred=None):
 # ========================
 # 执行器参数
 # ========================
+# STRATEGY_V4: SCAN_INTERVAL=300 confirmed (5 min cadence for observe/live paper)
 SCAN_INTERVAL = 300  # 扫描间隔（秒），默认5分钟
+
+# ========================
+# 成交滑点（paper + backtest，仅不利方向）
+# ========================
+SLIPPAGE_BPS = 2.0          # STRATEGY_V4: 每笔成交不利滑点（bps），开平仓均计
+SLIPPAGE_ATR_FRAC = 0.0     # 可选：>0 时再加 atr*frac 不利滑点；0=关闭
+
+# ========================
+# STRATEGY_V4 observe-ready 包（文档见 STRATEGY_V4.md）
+# ========================
+# Universe: TRADING_SYMBOLS = BTC/ETH/BNB/SOL/XRP（训练集五币）
+# Timeframe: 1h K；Scan: SCAN_INTERVAL=300s（5 min）
+# SIGNAL_OBSERVE_MODE=True（仅 journal；翻 False 即开纸仓）
+# Gates: CONFIDENCE_THRESHOLD=0.80, ADX_STRONG_THRESHOLD=25, DI 方向过滤保留
+# Risk: RISK_PER_TRADE_PCT=0.02, LEVERAGE=2.0, SL=1.5 ATR, TP RR=2.5,
+#       TRAILING_STOP_ATR=1.5, TRAIL_ACTIVATE_R=1.0, MAX_MARGIN_PCT=0.40,
+#       MAX_CONCURRENT_POSITIONS=2, COOLDOWN=6h/bars, MAX_HOLD_HOURS=24
+# Costs: SLIPPAGE_BPS=2.0 (+ optional ATR frac), fee_rate=0.0004 on slipped notional

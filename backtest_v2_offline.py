@@ -7,7 +7,7 @@ Mirrors paper_trader entry/exit as closely as practical:
 - Model: regime_model_v2_multi_full.pkl (fallback quantile)
 - Gates: ADX + confidence + DI direction filter from config.py
 - Long/short with ATR SL + trailing + TP (BUY high>=tp / SELL low<=tp); per-symbol cooldown
-- Fee 4bps; risk sizing + leverage cap from config
+- Fee 4bps + adverse slippage (SLIPPAGE_BPS / optional ATR frac); risk sizing + leverage from config
 
 Modes:
   level (default): enter whenever flat + gated signal (closest to paper_trader)
@@ -40,9 +40,12 @@ from config import (
     STOP_LOSS_ATR_MULT,
     TAKE_PROFIT_RR,
     TRAILING_STOP_ATR,
+    TRAIL_ACTIVATE_R,
     MIN_BARS_BETWEEN_TRADES,
     MAX_CONCURRENT_POSITIONS,
     MAX_HOLD_HOURS,
+    SLIPPAGE_BPS,
+    SLIPPAGE_ATR_FRAC,
     resolve_model_file,
 )
 from strategy_v2_quantile import prepare_features_v2
@@ -65,6 +68,23 @@ FEATURE_COLS = [
     "MACD_hist_positive",
     "Price_std_20", "ATR_ratio", "Drawdown_20", "RSI_dev",
 ]
+
+
+
+def apply_slippage(price, side, is_buy_action, atr=0, slippage_bps=None, slippage_atr_frac=None):
+    """Adverse-only slippage on fills (mirrors paper_trader).
+
+    side: 'BUY'/'SELL' position side (clarity for callers).
+    is_buy_action: True = buy fill (open long / close short) → higher price;
+                   False = sell fill (open short / close long) → lower price.
+    """
+    bps_val = float(SLIPPAGE_BPS if slippage_bps is None else slippage_bps) / 10000.0
+    atr_frac = float(SLIPPAGE_ATR_FRAC if slippage_atr_frac is None else slippage_atr_frac)
+    atr_pad = float(atr or 0) * atr_frac
+    px = float(price)
+    if is_buy_action:
+        return px * (1.0 + bps_val) + atr_pad
+    return px * (1.0 - bps_val) - atr_pad
 
 
 @dataclass
@@ -119,6 +139,7 @@ def simulate_symbol(
     years: Optional[float],
     mode: str = "level",
     cooldown_bars: int | None = None,
+    slippage_bps: float | None = None,
 ) -> SymbolResult:
     if cooldown_bars is None:
         cooldown_bars = int(MIN_BARS_BETWEEN_TRADES)
@@ -187,9 +208,12 @@ def simulate_symbol(
             reason = None
 
             if side == "BUY":
+                one_r = atr_pos * STOP_LOSS_ATR_MULT
+                activate = entry + one_r * float(TRAIL_ACTIVATE_R)
                 if high > position["highest_seen"]:
                     position["highest_seen"] = high
-                    position["sl"] = max(sl, high - atr_pos * TRAILING_STOP_ATR)
+                if high >= activate:
+                    position["sl"] = max(sl, high - atr_pos * TRAILING_STOP_ATR, entry)
                     sl = position["sl"]
                 hit_sl = low <= sl
                 hit_tp = tp is not None and high >= tp
@@ -204,9 +228,12 @@ def simulate_symbol(
                     exit_price = sl
                     reason = "SL/TRAIL"
             else:
+                one_r = atr_pos * STOP_LOSS_ATR_MULT
+                activate = entry - one_r * float(TRAIL_ACTIVATE_R)
                 if low < position["lowest_seen"]:
                     position["lowest_seen"] = low
-                    position["sl"] = min(sl, low + atr_pos * TRAILING_STOP_ATR)
+                if low <= activate:
+                    position["sl"] = min(sl, low + atr_pos * TRAILING_STOP_ATR, entry)
                     sl = position["sl"]
                 hit_sl = high >= sl
                 hit_tp = tp is not None and low <= tp
@@ -226,6 +253,14 @@ def simulate_symbol(
                 reason = "MAX_HOLD"
 
             if exit_price is not None:
+                # Close long = sell (adverse lower); close short = buy (adverse higher)
+                exit_price = apply_slippage(
+                    exit_price,
+                    side,
+                    is_buy_action=(side != "BUY"),
+                    atr=atr_pos,
+                    slippage_bps=slippage_bps,
+                )
                 if side == "BUY":
                     pnl = (exit_price - entry) * amount
                 else:
@@ -270,7 +305,13 @@ def simulate_symbol(
             if cooldown_bars > 0 and (i - last_exit_i) < cooldown_bars:
                 allow = False
             if allow and atr > 0 and np.isfinite(atr):
-                entry_price = price
+                entry_price = apply_slippage(
+                    price,
+                    signal,
+                    is_buy_action=(signal == "BUY"),
+                    atr=atr,
+                    slippage_bps=slippage_bps,
+                )
                 if signal == "BUY":
                     sl_price = entry_price - atr * STOP_LOSS_ATR_MULT
                     tp_price = entry_price + (entry_price - sl_price) * TAKE_PROFIT_RR
@@ -309,17 +350,25 @@ def simulate_symbol(
         price = closes[-1]
         entry = position["entry_price"]
         amount = position["amount"]
-        pnl = (price - entry) * amount if position["type"] == "BUY" else (entry - price) * amount
-        fee = price * amount * FEE_RATE
+        side = position["type"]
+        exit_price = apply_slippage(
+            price,
+            side,
+            is_buy_action=(side != "BUY"),
+            atr=position.get("atr", 0),
+            slippage_bps=slippage_bps,
+        )
+        pnl = (exit_price - entry) * amount if side == "BUY" else (entry - exit_price) * amount
+        fee = exit_price * amount * FEE_RATE
         balance += position["margin"] + pnl - fee
         trades.append(
             Trade(
                 symbol=symbol,
-                side=position["type"],
+                side=side,
                 entry_time=position["entry_time"],
                 exit_time=times[-1],
                 entry_price=entry,
-                exit_price=price,
+                exit_price=float(exit_price),
                 amount=amount,
                 pnl=pnl - fee,
                 fee=fee + position.get("entry_fee", 0.0),
@@ -470,7 +519,7 @@ def write_reports(
         f"DI方向过滤, SL={STOP_LOSS_ATR_MULT}×ATR, TP={TAKE_PROFIT_RR}:1 RR, "
         f"trail={TRAILING_STOP_ATR}×ATR, cooldown={MIN_BARS_BETWEEN_TRADES} bars, "
         f"risk={RISK_PER_TRADE_PCT*100:.1f}%, lev={LEVERAGE}, "
-        f"max_pos={MAX_CONCURRENT_POSITIONS}(paper), fee={FEE_RATE}"
+        f"max_pos={MAX_CONCURRENT_POSITIONS}(paper), fee={FEE_RATE}, slip={SLIPPAGE_BPS}bps"
     )
     header.append(f"- **初始资金 (每币种独立):** ${INITIAL_CAPITAL:,.0f}")
     header.append(f"- **数据窗口:** {'全量 ~6y' if not years else f'最近 {years} 年'}")
@@ -528,7 +577,7 @@ def write_reports(
     limits.append("")
     limits.append("- **训练泄漏 / 过拟合风险：** 模型在含本回测区间的数据上随机划分训练，非严格 walk-forward；分类准确率乐观，但交易层仍可能亏损。")
     limits.append("- **独立账户简化：** 每币种独立 $10k，未模拟共享保证金与跨币种相关性。")
-    limits.append("- **执行假设：** 收盘价入场；止损按当根 High/Low 触发并以 SL 价成交；无滑点 / funding / 流动性冲击。")
+    limits.append("- **执行假设：** 收盘价入场后加不利滑点（SLIPPAGE_BPS + 可选 ATR frac）；止损按当根 High/Low 触发后再滑点；fee 按滑点后名义；无 funding / 流动性冲击。")
     limits.append("- **与 paper_trader 差异：** 纸交易扫描全市场 top-N（约 5 分钟），回测仅固定五币、按 1h K 线；宏观/新闻过滤两边均禁用。")
     limits.append("- **止盈：** 2026-09-10 起 paper + 回测均执行 TP（BUY high≥tp / SELL low≤tp）；同根同时触 TP+SL 时回测按保守 SL。")
     limits.append("- **过度交易风险：** v3 再叠加 DI 方向过滤与更低单仓风险；level 模式仍可能在趋势市外反复试错。")
@@ -690,10 +739,118 @@ def write_reports(
     print(f"[+] Stats JSON: {stats_path}")
 
 
-def run_batch(model, symbols, years, mode, cooldown_bars) -> list[SymbolResult]:
+def write_slippage_v4_report(
+    with_slip: list[SymbolResult],
+    no_slip: list[SymbolResult],
+    model_path: str,
+    years: Optional[float],
+    slip_bps: float,
+    elapsed_s: float,
+):
+    """Short STRATEGY_V4 slippage vs no-slip comparison report."""
+    now = datetime.now(timezone.utc)
+    cst = now + pd.Timedelta(hours=8)
+    _, s_slip = block_for_results("with_slip", with_slip)
+    _, s_nos = block_for_results("no_slip", no_slip)
+
+    lines = []
+    lines.append("# RegimeTrader-AI STRATEGY_V4 — Slippage Backtest")
+    lines.append("")
+    lines.append(f"- **生成时间 (UTC):** {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"- **本地时间 (CST/UTC+8):** {cst.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"- **模型:** `{os.path.basename(model_path)}`")
+    lines.append(
+        f"- **门槛:** ADX≥{ADX_STRONG_THRESHOLD}, conf≥{CONFIDENCE_THRESHOLD}, DI过滤, "
+        f"risk={RISK_PER_TRADE_PCT*100:.0f}%, lev={LEVERAGE}, SL={STOP_LOSS_ATR_MULT}×ATR, "
+        f"TP={TAKE_PROFIT_RR}:1, trail={TRAILING_STOP_ATR}, max_pos={MAX_CONCURRENT_POSITIONS}, "
+        f"cooldown={MIN_BARS_BETWEEN_TRADES}h, max_hold={MAX_HOLD_HOURS}h"
+    )
+    lines.append(
+        f"- **费用:** fee={FEE_RATE} on slipped notional; SLIPPAGE_ATR_FRAC={SLIPPAGE_ATR_FRAC}"
+    )
+    lines.append(
+        f"- **窗口:** {'全量~6y' if not years else f'最近 {years} 年'} | mode=level | 耗时 {elapsed_s:.1f}s"
+    )
+    lines.append("")
+    lines.append("## 有滑点 vs 无滑点（同配置）")
+    lines.append("")
+    lines.append(f"| 指标 | 无滑点 (0 bps) | 有滑点 ({slip_bps:.1f} bps) | Δ |")
+    lines.append("|------|----------------|---------------------|---|")
+
+    def row(label, key, fmt):
+        a, b = s_nos[key], s_slip[key]
+        d = b - a
+        if fmt == "pct":
+            return f"| {label} | {a*100:.1f}% | {b*100:.1f}% | {(d)*100:+.1f}pp |"
+        if fmt == "ret":
+            return f"| {label} | {a:+.2f}% | {b:+.2f}% | {d:+.2f}pp |"
+        if fmt == "dd":
+            return f"| {label} | {a:.2f}% | {b:.2f}% | {d:+.2f}pp |"
+        if fmt == "pf":
+            return f"| {label} | {pf_str(a)} | {pf_str(b)} | {d:+.3f} |"
+        if fmt == "money":
+            return f"| {label} | ${a:,.2f} | ${b:,.2f} | ${d:+,.2f} |"
+        if fmt == "int":
+            return f"| {label} | {int(a)} | {int(b)} | {int(d):+d} |"
+        if fmt == "h":
+            return f"| {label} | {a:.1f}h | {b:.1f}h | {d:+.1f}h |"
+        return f"| {label} | {a} | {b} | {d} |"
+
+    for lab, key, fmt in [
+        ("总交易数", "n_trades", "int"),
+        ("胜率", "win_rate", "pct"),
+        ("合计收益", "total_return_pct", "ret"),
+        ("最大回撤均值", "avg_dd", "dd"),
+        ("盈亏因子", "profit_factor", "pf"),
+        ("已实现净盈亏", "total_pnl", "money"),
+        ("平均持仓", "avg_bars_held", "h"),
+        ("最终权益合计", "total_final", "money"),
+    ]:
+        lines.append(row(lab, key, fmt))
+    lines.append("")
+    lines.append("## 分币种最终权益")
+    lines.append("")
+    lines.append("| 币种 | 无滑点权益 | 有滑点权益 | Δ权益 | 无滑点收益 | 有滑点收益 |")
+    lines.append("|------|------------|------------|--------|------------|------------|")
+    nos_map = {r["symbol"]: r for r in s_nos["per_symbol"]}
+    for r in s_slip["per_symbol"]:
+        n = nos_map.get(r["symbol"], {})
+        nf = float(n.get("final_equity", 0))
+        sf = float(r["final_equity"])
+        nr = float(n.get("return_pct", 0))
+        sr = float(r["return_pct"])
+        lines.append(
+            f"| {r['symbol']} | ${nf:,.2f} | ${sf:,.2f} | ${sf-nf:+,.2f} | {nr:+.2f}% | {sr:+.2f}% |"
+        )
+    lines.append("")
+    lines.append("## 说明")
+    lines.append("")
+    lines.append(
+        f"- 滑点规则：开多/平空买高、开空/平多卖低，各 {slip_bps} bps；"
+        "TP/SL/MAX_HOLD/EOD 理想价均再滑不利方向；fee 按滑点后名义计。"
+    )
+    lines.append(
+        "- 与 STRATEGY_V4 纸交易一致：训练集五币、conf≥0.80、ADX≥25、DI 过滤、risk2%/lev2、max_pos=1。"
+    )
+    lines.append("- 回测仍为每币独立 $10k；未模拟共享保证金。训练泄漏等局限同既有离线回测。")
+    lines.append("")
+
+    out = os.path.join(REPO_ROOT, "reports", "backtest_slippage_v4.md")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"[+] Slippage compare report: {out}")
+
+
+def run_batch(model, symbols, years, mode, cooldown_bars, slippage_bps=None) -> list[SymbolResult]:
     out = []
     for sym in symbols:
-        out.append(simulate_symbol(sym, model, years, mode=mode, cooldown_bars=cooldown_bars))
+        out.append(
+            simulate_symbol(
+                sym, model, years, mode=mode, cooldown_bars=cooldown_bars,
+                slippage_bps=slippage_bps,
+            )
+        )
     return out
 
 
@@ -704,6 +861,17 @@ def main():
     parser.add_argument("--mode", choices=["level", "edge"], default="level")
     parser.add_argument("--cooldown", type=int, default=None, help="Bars to wait after exit (default: MIN_BARS_BETWEEN_TRADES from config)")
     parser.add_argument("--with-edge", action="store_true", help="Also run edge sensitivity")
+    parser.add_argument(
+        "--slippage-bps",
+        type=float,
+        default=None,
+        help="Override SLIPPAGE_BPS (default: config). Use 0 for no-slip comparison.",
+    )
+    parser.add_argument(
+        "--compare-slippage",
+        action="store_true",
+        help="Also run zero-slippage pass and write reports/backtest_slippage_v4.md",
+    )
     args = parser.parse_args()
 
     os.chdir(REPO_ROOT)
@@ -713,17 +881,36 @@ def main():
     with open(model_path, "rb") as f:
         model = pickle.load(f)
     cd = args.cooldown if args.cooldown is not None else MIN_BARS_BETWEEN_TRADES
-    print(f"[*] Gates: ADX>={ADX_STRONG_THRESHOLD} conf>={CONFIDENCE_THRESHOLD} DI-filter TP=on cooldown={cd}bars risk={RISK_PER_TRADE_PCT} SL={STOP_LOSS_ATR_MULT} TP_RR={TAKE_PROFIT_RR}")
+    slip = args.slippage_bps if args.slippage_bps is not None else float(SLIPPAGE_BPS)
+    print(
+        f"[*] Gates: ADX>={ADX_STRONG_THRESHOLD} conf>={CONFIDENCE_THRESHOLD} "
+        f"DI-filter TP=on cooldown={cd}bars risk={RISK_PER_TRADE_PCT} "
+        f"SL={STOP_LOSS_ATR_MULT} TP_RR={TAKE_PROFIT_RR} slip={slip}bps"
+    )
     print(f"[*] Symbols: {args.symbols} | years={args.years or 'full'} | mode={args.mode}")
 
-    primary = run_batch(model, args.symbols, args.years, args.mode, args.cooldown)
+    primary = run_batch(
+        model, args.symbols, args.years, args.mode, args.cooldown, slippage_bps=slip
+    )
     sensitivity = None
     if args.with_edge and args.mode != "edge":
         print("[*] Running edge sensitivity pass...")
-        sensitivity = run_batch(model, args.symbols, args.years, "edge", args.cooldown)
+        sensitivity = run_batch(
+            model, args.symbols, args.years, "edge", args.cooldown, slippage_bps=slip
+        )
 
     elapsed = time.time() - t_start
     write_reports(primary, sensitivity, model_path, args.years, elapsed, args.mode)
+
+    if args.compare_slippage:
+        print("[*] Running no-slippage comparison pass...")
+        t1 = time.time()
+        no_slip = run_batch(
+            model, args.symbols, args.years, args.mode, args.cooldown, slippage_bps=0.0
+        )
+        write_slippage_v4_report(primary, no_slip, model_path, args.years, slip, time.time() - t_start)
+        print(f"[*] Compare slip elapsed total: {time.time() - t_start:.1f}s (compare pass {time.time()-t1:.1f}s)")
+
     print(f"[*] Elapsed: {elapsed:.1f}s")
 
 

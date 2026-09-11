@@ -1,0 +1,2 @@
+2026-09-10T17:01:40Z
+V4 paper live: observe=False, slip=2bps, 5 symbols, scan=300s

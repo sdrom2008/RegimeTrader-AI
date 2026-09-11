@@ -1,6 +1,7 @@
 """
 v2 策略执行器 - 干跑/实盘统一入口
 支持：三分类模型 + 双向交易 + 动态风控
+信号观察模式：记 journal、不新开仓；已有仓位仍正常平仓
 """
 
 import os
@@ -37,7 +38,11 @@ from config import (
     FUNDING_RATE_THRESHOLD, TRADING_SYMBOLS, resolve_model_file,
     COOLDOWN_HOURS, MIN_BARS_BETWEEN_TRADES, MAX_CONCURRENT_POSITIONS,
     MAX_HOLD_HOURS,
+    SIGNAL_OBSERVE_MODE, SIGNAL_JOURNAL_FILE,
+    SLIPPAGE_BPS, SLIPPAGE_ATR_FRAC,
+    TRAIL_ACTIVATE_R, MAX_MARGIN_PCT_OF_EQUITY,
 )
+
 # from news_fetcher import fetch_all_news
 # from sentiment_analyzer import SentimentAnalyzer
 # from risk_controller import RiskController
@@ -53,6 +58,8 @@ warnings.filterwarnings(
 )
 
 DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
+
+CLASS_NAMES = {0: 'Down', 1: 'Osc/HOLD', 2: 'Up'}
 
 # 宏风险监控（全局单例，避免重复抓取）
 RISK_CHECK_INTERVAL = 600  # 秒，10分钟
@@ -91,9 +98,61 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=4)
 
+def _journal_path():
+    path = SIGNAL_JOURNAL_FILE
+    if not os.path.isabs(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+def append_signal_journal(record: dict):
+    """Append one JSON line to the signal journal (for accuracy eval)."""
+    try:
+        path = _journal_path()
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        logger.warning(f"signal journal write failed: {e}")
+
+
+def apply_slippage(price, side, is_buy_action, atr=0):
+    """Adverse-only slippage on fills (entry and exit).
+
+    side: position side 'BUY' (long) / 'SELL' (short) — for callers/clarity.
+    is_buy_action: True = this fill buys (open long / close short) → pay higher;
+                   False = this fill sells (open short / close long) → sell lower.
+    Rules (bps from SLIPPAGE_BPS; optional atr*SLIPPAGE_ATR_FRAC):
+      Open BUY / Close short: price * (1 + bps/10000) [+ atr*frac]
+      Open SELL / Close long: price * (1 - bps/10000) [- atr*frac]
+    """
+    bps = float(SLIPPAGE_BPS) / 10000.0
+    atr_pad = float(atr or 0) * float(SLIPPAGE_ATR_FRAC or 0)
+    px = float(price)
+    if is_buy_action:
+        return px * (1.0 + bps) + atr_pad
+    return px * (1.0 - bps) - atr_pad
+
+def make_binance_spot_exchange():
+    """Public spot via data-api.binance.vision (avoids api.binance.com 451)."""
+    exchange = ccxt.binance({
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'spot',
+            'fetchMarkets': ['spot'],
+            'fetchCurrencies': False,
+        },
+    })
+    _pub = 'https://data-api.binance.vision'
+    exchange.urls['api']['public'] = f'{_pub}/api/v3'
+    exchange.urls['api']['private'] = f'{_pub}/api/v3'
+    exchange.urls['api']['v1'] = f'{_pub}/api/v1'
+    return exchange
+
 def scan_and_trade_v2():
     logger.info(f"{'='*60}")
     logger.info(f"🚀 RegimeTrader AI v2 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if SIGNAL_OBSERVE_MODE:
+        logger.info("📡 SIGNAL_OBSERVE_MODE=ON — journal only, no new opens")
     logger.info(f"{'='*60}")
 
     # 加载模型（优先 multi_full，缺失则回退 quantile）
@@ -101,6 +160,12 @@ def scan_and_trade_v2():
         model_path = resolve_model_file()
         with open(model_path, 'rb') as f:
             model = pickle.load(f)
+        # Silence RF/joblib Parallel spam on every predict
+        if hasattr(model, 'verbose'):
+            try:
+                model.verbose = 0
+            except Exception:
+                pass
         logger.info(f"Model loaded from {model_path}")
     except Exception as e:
         logger.error(
@@ -116,27 +181,14 @@ def scan_and_trade_v2():
     logger.info(f"Balance: ${balance:.2f} | Positions: {len(positions)}")
 
     fee_rate = 0.0004
-    # 本机访问 api.binance.com 常遇 451；公共行情改走 data-api.binance.vision（仅 spot）
-    exchange = ccxt.binance({
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'spot',
-            'fetchMarkets': ['spot'],
-            'fetchCurrencies': False,
-        },
-    })
-    _pub = 'https://data-api.binance.vision'
-    exchange.urls['api']['public'] = f'{_pub}/api/v3'
-    exchange.urls['api']['private'] = f'{_pub}/api/v3'
-    exchange.urls['api']['v1'] = f'{_pub}/api/v1'
+    exchange = make_binance_spot_exchange()
 
-
-    # 1) 更新持仓
+    # 1) 更新持仓（观察模式仍正常平仓）
     closed_positions = []
     unrealized_total = 0.0
 
     cooldowns = state.setdefault('cooldowns', {})
-    now_utc = datetime.datetime.utcnow()
+    now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     for sym, pos in list(positions.items()):
         try:
@@ -154,10 +206,16 @@ def scan_and_trade_v2():
             if pos['type'] == 'BUY':
                 unreal = (price - entry) * amount
                 unrealized_total += unreal
-                if price > pos.get('highest_seen', entry):
-                    pos['highest_seen'] = price
-                    pos['sl'] = max(sl, price - atr * TRAILING_STOP_ATR)
+                one_r = atr * STOP_LOSS_ATR_MULT
+                activate = entry + one_r * float(TRAIL_ACTIVATE_R)
+                if price >= activate:
+                    if price > pos.get('highest_seen', entry):
+                        pos['highest_seen'] = price
+                    # Trail + floor at breakeven once activated
+                    pos['sl'] = max(sl, price - atr * TRAILING_STOP_ATR, entry)
                     sl = pos['sl']
+                elif price > pos.get('highest_seen', entry):
+                    pos['highest_seen'] = price
                 # Prefer TP if hit; else trailing/fixed SL (same as before)
                 if tp is not None and price >= tp:
                     exit_price = tp
@@ -175,6 +233,7 @@ def scan_and_trade_v2():
                     except Exception:
                         pass
                 if exit_price is not None:
+                    exit_price = apply_slippage(exit_price, 'BUY', is_buy_action=False, atr=atr)
                     pnl = (exit_price - entry) * amount
                     fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
@@ -183,10 +242,15 @@ def scan_and_trade_v2():
             elif pos['type'] == 'SELL':
                 unreal = (entry - price) * amount
                 unrealized_total += unreal
-                if price < pos.get('lowest_seen', entry):
-                    pos['lowest_seen'] = price
-                    pos['sl'] = min(sl, price + atr * TRAILING_STOP_ATR)
+                one_r = atr * STOP_LOSS_ATR_MULT
+                activate = entry - one_r * float(TRAIL_ACTIVATE_R)
+                if price <= activate:
+                    if price < pos.get('lowest_seen', entry):
+                        pos['lowest_seen'] = price
+                    pos['sl'] = min(sl, price + atr * TRAILING_STOP_ATR, entry)
                     sl = pos['sl']
+                elif pos.get('lowest_seen') is None or price < pos.get('lowest_seen', entry):
+                    pos['lowest_seen'] = price
                 if tp is not None and price <= tp:
                     exit_price = tp
                     exit_reason = 'TP'
@@ -203,6 +267,7 @@ def scan_and_trade_v2():
                     except Exception:
                         pass
                 if exit_price is not None:
+                    exit_price = apply_slippage(exit_price, 'SELL', is_buy_action=True, atr=atr)
                     pnl = (entry - exit_price) * amount
                     fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
@@ -232,43 +297,41 @@ def scan_and_trade_v2():
     total_equity = balance + margin_used + unrealized_total
     logger.info(f"Equity: ${total_equity:.2f} | Cash: ${balance:.2f} | Margin: ${margin_used:.2f}")
 
+    # Weird equity/cash: cash ~0 while margin fully tied up → do not open more
+    can_open_new = True
+    if balance <= 1e-6 and margin_used > 0:
+        can_open_new = False
+        logger.warning(
+            f"Cash~0 with margin in use (${margin_used:.2f}) — skip new opens "
+            f"(manage existing only)"
+        )
+    if total_equity <= 0:
+        can_open_new = False
+        logger.warning(f"Equity <= 0 (${total_equity:.2f}) — skip new opens")
+
     # 3) 宏观风险检查（临时禁用）
-    # macro_risk = get_macro_risk_assessment()
-    # if macro_risk['level'] == 2:
-    #     logger.warning(f"🛡️ Macro risk CRITICAL: {macro_risk['reason']} - Skipping new entries")
-    #     state['balance'] = balance
-    #     state['positions'] = positions
-    #     save_state(state)
-    #     logger.info(f"\n--- Summary (Risk Halt) ---")
-    #     logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
-    #     logger.info(f"Closed positions: {len(closed_positions)}")
-    #     logger.info(f"New entries: 0 (MACRO RISK CRITICAL)")
-    #     return
-    # elif macro_risk['level'] == 1:
-    #     logger.info(f"🛡️ Macro risk WARNING: {macro_risk['reason']} - Reducing position size")
-    #     adjusted_risk_pct = RISK_PER_TRADE_PCT * 0.5
-    # else:
     adjusted_risk_pct = RISK_PER_TRADE_PCT
 
-    # 4) 扫描新机会
-    logger.info(f"Scanning top {SCAN_LIMIT} symbols (filtered by TRADING_SYMBOLS)...")
+    # 4) 扫描新机会 / 记 journal
+    logger.info(f"Scanning symbols (TRADING_SYMBOLS whitelist / top {SCAN_LIMIT})...")
     try:
         exchange.load_markets()
         tickers = exchange.fetch_tickers()
         usdt_pairs = [s for s, t in tickers.items() if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s]
         usdt_pairs.sort(key=lambda s: (tickers[s].get('quoteVolume') or 0), reverse=True)
 
-        # 仅在白名单内扫描（如果定义了 TRADING_SYMBOLS）
+        # 白名单锁定训练集币种；空列表则扫 top SCAN_LIMIT
         if TRADING_SYMBOLS:
-            symbols = [s for s in usdt_pairs[:SCAN_LIMIT] if s in TRADING_SYMBOLS]
-            logger.info(f"白名单过滤: {len(symbols)}/{SCAN_LIMIT} 个币种在训练集内")
+            symbols = list(TRADING_SYMBOLS)
+            logger.info(f"白名单锁定: {symbols}")
         else:
             symbols = usdt_pairs[:SCAN_LIMIT]
     except Exception as e:
         logger.error(f"Fetch tickers failed: {e}")
-        symbols = []
+        symbols = list(TRADING_SYMBOLS) if TRADING_SYMBOLS else []
 
     new_entries = []
+    observed_signals = []
 
     def _in_cooldown(sym: str) -> bool:
         until = cooldowns.get(sym)
@@ -282,11 +345,6 @@ def scan_and_trade_v2():
         return hours < float(COOLDOWN_HOURS)
 
     for symbol in symbols:
-        if symbol in positions:
-            continue
-        if _in_cooldown(symbol):
-            logger.debug(f"Skip {symbol}: cooldown ({COOLDOWN_HOURS}h / {MIN_BARS_BETWEEN_TRADES} bars)")
-            continue
         time.sleep(0.2)
 
         try:
@@ -317,20 +375,57 @@ def scan_and_trade_v2():
             ]
             X = latest[features].values.reshape(1, -1)
 
-            pred = model.predict(X)[0]
+            pred = int(model.predict(X)[0])
             probs = model.predict_proba(X)[0]
-            confidence = probs[pred]
-            adx = latest['ADX']
+            confidence = float(probs[pred])
+            adx = float(latest['ADX'])
 
             # 信号判断 + DI 方向过滤（BUY 需 +DI>-DI；SELL 需 -DI>+DI）
             plus_di = float(latest['+DI'])
             minus_di = float(latest['-DI'])
-            signal = None
-            if adx >= ADX_STRONG_THRESHOLD and confidence >= CONFIDENCE_THRESHOLD:
+            close_px = float(latest['Close'])
+            class_name = CLASS_NAMES.get(pred, str(pred))
+
+            gates_passed = (
+                adx >= ADX_STRONG_THRESHOLD
+                and confidence >= CONFIDENCE_THRESHOLD
+            )
+            proposed_signal = None
+            if gates_passed:
                 if pred == 2 and plus_di > minus_di:
-                    signal = "BUY"
+                    proposed_signal = "BUY"
                 elif pred == 0 and minus_di > plus_di:
-                    signal = "SELL"
+                    proposed_signal = "SELL"
+            # gates_passed means ADX+conf; proposed_signal also needs DI agree
+            entry_gates_ok = proposed_signal is not None
+
+            ts_iso = now_utc.isoformat() + 'Z'
+            # Journal every scanned whitelist symbol (always)
+            append_signal_journal({
+                'timestamp': ts_iso,
+                'symbol': symbol,
+                'pred': pred,
+                'class_name': class_name,
+                'confidence': confidence,
+                'adx': adx,
+                'plus_di': plus_di,
+                'minus_di': minus_di,
+                'close': close_px,
+                'proposed_signal': proposed_signal,
+                'gates_passed': entry_gates_ok,
+                'adx_conf_ok': gates_passed,
+                'observe_mode': bool(SIGNAL_OBSERVE_MODE),
+            })
+
+            signal = proposed_signal  # candidate for open
+
+            # Skip open if already holding this symbol
+            if symbol in positions:
+                signal = None
+
+            if signal and _in_cooldown(symbol):
+                logger.debug(f"Skip {symbol}: cooldown ({COOLDOWN_HOURS}h / {MIN_BARS_BETWEEN_TRADES} bars)")
+                signal = None
 
             # 最大同时持仓限制
             if signal and len(positions) >= MAX_CONCURRENT_POSITIONS:
@@ -340,9 +435,25 @@ def scan_and_trade_v2():
                 )
                 signal = None
 
+            if signal and not can_open_new:
+                logger.debug(f"Skip {symbol} {signal}: cash/equity guard")
+                signal = None
+
+            if signal and SIGNAL_OBSERVE_MODE:
+                logger.info(
+                    f"SIGNAL_OBSERVE {signal} {symbol} @{close_px:.4f} "
+                    f"pred={pred}({class_name}) conf={confidence:.3f} "
+                    f"ADX={adx:.1f} +DI={plus_di:.1f} -DI={minus_di:.1f}"
+                )
+                observed_signals.append(f"{symbol} {signal} @{close_px:.4f}")
+                continue  # do not mutate balance/positions
+
             if signal:
-                entry_price = latest['Close']
-                atr = latest['ATR']
+                atr = float(latest['ATR'])
+                # Adverse slippage on fill; SL/TP anchored to slipped entry
+                entry_price = apply_slippage(
+                    close_px, signal, is_buy_action=(signal == "BUY"), atr=atr
+                )
 
                 # 止损止盈
                 if signal == "BUY":
@@ -364,8 +475,27 @@ def scan_and_trade_v2():
                 margin_req = (amount * entry_price) / LEVERAGE
 
                 used_margin = sum(p['margin'] for p in positions.values())
-                if margin_req > (total_equity - used_margin):
+                free_cash = balance
+                # Cap single-position margin so one fill cannot consume all cash
+                max_margin = min(
+                    free_cash,
+                    total_equity * float(MAX_MARGIN_PCT_OF_EQUITY),
+                    max(0.0, total_equity - used_margin),
+                )
+                if max_margin <= 1e-6:
+                    logger.info(
+                        f"Skip {symbol} {signal}: no free margin "
+                        f"(cash ${free_cash:.2f}, used ${used_margin:.2f})"
+                    )
                     continue
+                if margin_req > max_margin:
+                    scale = max_margin / margin_req
+                    amount *= scale
+                    margin_req = max_margin
+                    logger.info(
+                        f"Size {symbol} {signal}: scaled to margin "
+                        f"${margin_req:.2f} ({float(MAX_MARGIN_PCT_OF_EQUITY)*100:.0f}% equity / cash cap)"
+                    )
 
                 # 开仓
                 balance -= margin_req
@@ -379,7 +509,7 @@ def scan_and_trade_v2():
                     'tp': tp_price,
                     'highest_seen': entry_price if signal == "BUY" else None,
                     'lowest_seen': entry_price if signal == "SELL" else None,
-                    'entry_time': datetime.datetime.utcnow().isoformat()+'Z',
+                    'entry_time': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]+'Z',
                     'confidence': confidence
                 }
                 positions[symbol] = pos
@@ -403,9 +533,15 @@ def scan_and_trade_v2():
         sym, pnl = item[0], item[1]
         reason = item[3] if len(item) > 3 else ''
         logger.info(f"  {sym}: ${pnl:+.2f} {reason}")
-    logger.info(f"New entries: {len(new_entries)}")
-    for e in new_entries:
-        logger.info(f"  {e}")
+    if SIGNAL_OBSERVE_MODE:
+        logger.info(f"Observed (not opened): {len(observed_signals)}")
+        for e in observed_signals:
+            logger.info(f"  {e}")
+        logger.info(f"New entries: 0 (SIGNAL_OBSERVE_MODE)")
+    else:
+        logger.info(f"New entries: {len(new_entries)}")
+        for e in new_entries:
+            logger.info(f"  {e}")
 
 if __name__ == '__main__':
     scan_and_trade_v2()
