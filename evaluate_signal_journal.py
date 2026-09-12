@@ -103,13 +103,26 @@ def main():
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     horizon = int(LOOK_FORWARD_CANDLES)
 
-    actionable = [
+    actionable_raw = [
         r for r in rows
         if r.get('gates_passed') and r.get('proposed_signal') in ('BUY', 'SELL')
     ]
+    # 5min scan duplicates the same closed 1h bar — keep first per (symbol, bar)
+    seen = set()
+    actionable = []
+    for r in actionable_raw:
+        bar = r.get('closed_1h_bar') or (str(r.get('timestamp', ''))[:13] + ':00')
+        key = (r.get('symbol'), bar, r.get('proposed_signal'))
+        if key in seen:
+            continue
+        seen.add(key)
+        actionable.append(r)
 
     print(f"Journal: {journal_path}")
-    print(f"Total lines: {len(rows)} | Actionable: {len(actionable)}")
+    print(
+        f"Total lines: {len(rows)} | Actionable raw: {len(actionable_raw)} | "
+        f"deduped: {len(actionable)}"
+    )
     print(f"Horizon: {horizon}h | Conf>={CONFIDENCE_THRESHOLD} ADX>={ADX_STRONG_THRESHOLD}")
 
     exchange = make_exchange()
@@ -202,7 +215,8 @@ def main():
     md.append(f'| **ALL** | {total_hits} | {total_n} | **{overall:.1f}%** |')
     md.append('')
     md.append(f'- Pending (too young / missing fwd): {pending}')
-    md.append(f'- Actionable journal rows: {len(actionable)}')
+    md.append(f'- Actionable journal rows (deduped): {len(actionable)}')
+    md.append(f'- Actionable raw (pre-dedupe): {len(actionable_raw)}')
     md.append(f'- Total journal rows: {len(rows)}')
     md.append('')
     if results:

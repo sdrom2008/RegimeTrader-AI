@@ -133,6 +133,48 @@ def apply_slippage(price, side, is_buy_action, atr=0):
         return px * (1.0 + bps) + atr_pad
     return px * (1.0 - bps) - atr_pad
 
+
+def fetch_with_retry(fn, *args, retries=3, base_delay=0.6, label='fetch', **kwargs):
+    """Retry public Binance/data-api calls with exponential backoff."""
+    last_err = None
+    for attempt in range(int(retries)):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_err = e
+            if attempt + 1 >= int(retries):
+                break
+            delay = float(base_delay) * (2 ** attempt)
+            logger.warning(f"{label} failed ({attempt+1}/{retries}): {e}; retry in {delay:.1f}s")
+            time.sleep(delay)
+    raise last_err
+
+
+_MODEL_CACHE = {'path': None, 'mtime': None, 'model': None}
+
+
+def load_model_cached():
+    """Load pickle once per path/mtime (live_executor no longer reloads every scan)."""
+    model_path = resolve_model_file()
+    mtime = os.path.getmtime(model_path) if os.path.exists(model_path) else None
+    if (
+        _MODEL_CACHE['model'] is not None
+        and _MODEL_CACHE['path'] == model_path
+        and _MODEL_CACHE['mtime'] == mtime
+    ):
+        return _MODEL_CACHE['model'], model_path, False
+    with open(model_path, 'rb') as f:
+        model = pickle.load(f)
+    if hasattr(model, 'verbose'):
+        try:
+            model.verbose = 0
+        except Exception:
+            pass
+    _MODEL_CACHE['path'] = model_path
+    _MODEL_CACHE['mtime'] = mtime
+    _MODEL_CACHE['model'] = model
+    return model, model_path, True
+
 def make_binance_spot_exchange():
     """Public spot via data-api.binance.vision (avoids api.binance.com 451)."""
     exchange = ccxt.binance({
@@ -156,18 +198,13 @@ def scan_and_trade_v2():
         logger.info("📡 SIGNAL_OBSERVE_MODE=ON — journal only, no new opens")
     logger.info(f"{'='*60}")
 
-    # 加载模型（优先 multi_full，缺失则回退 quantile）
+    # 加载模型（mtime 缓存；优先 multi_full，缺失则回退 quantile）
     try:
-        model_path = resolve_model_file()
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-        # Silence RF/joblib Parallel spam on every predict
-        if hasattr(model, 'verbose'):
-            try:
-                model.verbose = 0
-            except Exception:
-                pass
-        logger.info(f"Model loaded from {model_path}")
+        model, model_path, freshly_loaded = load_model_cached()
+        if freshly_loaded:
+            logger.info(f"Model loaded from {model_path}")
+        else:
+            logger.debug(f"Model cache hit: {model_path}")
     except Exception as e:
         logger.error(
             f"Model not found: {e}. Train with: python train_model_v2_multi.py "
@@ -194,7 +231,7 @@ def scan_and_trade_v2():
 
     for sym, pos in list(positions.items()):
         try:
-            ticker = exchange.fetch_ticker(sym)
+            ticker = fetch_with_retry(exchange.fetch_ticker, sym, label=f'ticker {sym}')
             price = ticker['last']
             entry = pos['entry_price']
             amount = pos['amount']
@@ -239,7 +276,18 @@ def scan_and_trade_v2():
                     pnl = (exit_price - entry) * amount
                     fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
-                    closed_positions.append((sym, pnl, fee, exit_reason))
+                    hold_h = None
+                    try:
+                        et = datetime.datetime.fromisoformat(str(pos.get('entry_time', '')).replace('Z', ''))
+                        hold_h = (now_utc - et).total_seconds() / 3600.0
+                    except Exception:
+                        pass
+                    closed_positions.append({
+                        'symbol': sym, 'side': 'BUY', 'pnl': pnl, 'fee': fee,
+                        'reason': exit_reason, 'entry_price': entry, 'exit_price': exit_price,
+                        'entry_time': pos.get('entry_time'), 'confidence': pos.get('confidence'),
+                        'hold_hours': hold_h, 'tp': tp, 'sl': sl,
+                    })
                     logger.info(f"CLOSED LONG {sym} @{exit_price:.4f} ({exit_reason}) PnL:${pnl:.2f}")
             elif pos['type'] == 'SELL':
                 unreal = (entry - price) * amount
@@ -273,24 +321,57 @@ def scan_and_trade_v2():
                     pnl = (entry - exit_price) * amount
                     fee = (exit_price * amount) * fee_rate
                     balance += pos['margin'] + pnl - fee
-                    closed_positions.append((sym, pnl, fee, exit_reason))
+                    hold_h = None
+                    try:
+                        et = datetime.datetime.fromisoformat(str(pos.get('entry_time', '')).replace('Z', ''))
+                        hold_h = (now_utc - et).total_seconds() / 3600.0
+                    except Exception:
+                        pass
+                    closed_positions.append({
+                        'symbol': sym, 'side': 'SELL', 'pnl': pnl, 'fee': fee,
+                        'reason': exit_reason, 'entry_price': entry, 'exit_price': exit_price,
+                        'entry_time': pos.get('entry_time'), 'confidence': pos.get('confidence'),
+                        'hold_hours': hold_h, 'tp': tp, 'sl': sl,
+                    })
                     logger.info(f"CLOSED SHORT {sym} @{exit_price:.4f} ({exit_reason}) PnL:${pnl:.2f}")
         except Exception as e:
             logger.warning(f"{sym} update error: {e}")
 
     # 记录平仓历史 + 写入 per-symbol 冷却
     for item in closed_positions:
-        sym, pnl, fee = item[0], item[1], item[2]
-        exit_reason = item[3] if len(item) > 3 else 'SL/TRAIL'
+        if isinstance(item, dict):
+            sym = item['symbol']
+            pnl = item['pnl']
+            fee = item['fee']
+            exit_reason = item.get('reason', 'SL/TRAIL')
+            hist = {
+                'symbol': sym,
+                'side': item.get('side'),
+                'pnl': pnl,
+                'fee': fee,
+                'exit_time': now_utc.isoformat() + 'Z',
+                'reason': exit_reason,
+                'entry_price': item.get('entry_price'),
+                'exit_price': item.get('exit_price'),
+                'entry_time': item.get('entry_time'),
+                'confidence': item.get('confidence'),
+                'hold_hours': item.get('hold_hours'),
+                'tp': item.get('tp'),
+                'sl': item.get('sl'),
+            }
+        else:
+            sym, pnl, fee = item[0], item[1], item[2]
+            exit_reason = item[3] if len(item) > 3 else 'SL/TRAIL'
+            hist = {
+                'symbol': sym,
+                'pnl': pnl,
+                'fee': fee,
+                'exit_time': now_utc.isoformat() + 'Z',
+                'reason': exit_reason,
+            }
         positions.pop(sym, None)
-        exit_iso = now_utc.isoformat() + 'Z'
-        state['trade_history'].append({
-            'symbol': sym,
-            'pnl': pnl,
-            'fee': fee,
-            'exit_time': exit_iso,
-            'reason': exit_reason,
-        })
+        exit_iso = hist['exit_time']
+        state['trade_history'].append(hist)
         # Cooldown: block re-entry for COOLDOWN_HOURS after close
         cooldowns[sym] = exit_iso
 
@@ -334,6 +415,18 @@ def scan_and_trade_v2():
 
     new_entries = []
     observed_signals = []
+    gate_stats = {
+        'scanned': 0,
+        'fail_adx': 0,
+        'fail_conf': 0,
+        'fail_di': 0,
+        'fail_dir': 0,
+        'cooldown': 0,
+        'max_pos': 0,
+        'cash_guard': 0,
+        'bar_dedupe': 0,
+        'actionable': 0,
+    }
 
     def _in_cooldown(sym: str) -> bool:
         until = cooldowns.get(sym)
@@ -350,7 +443,7 @@ def scan_and_trade_v2():
         time.sleep(0.2)
 
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=250)
+            ohlcv = fetch_with_retry(exchange.fetch_ohlcv, symbol, '1h', limit=250, label=f'ohlcv {symbol}')
             df = pd.DataFrame(ohlcv, columns=['timestamp','Open','High','Low','Close','Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
@@ -400,19 +493,33 @@ def scan_and_trade_v2():
             class_name = CLASS_NAMES.get(pred, str(pred))
 
             di_abs = abs(float(plus_di) - float(minus_di))
-            gates_passed = (
-                adx >= ADX_STRONG_THRESHOLD
-                and confidence >= CONFIDENCE_THRESHOLD
-                and di_abs >= float(MIN_DI_DIFF)
-            )
+            adx_ok = adx >= ADX_STRONG_THRESHOLD
+            conf_ok = confidence >= CONFIDENCE_THRESHOLD
+            di_ok = di_abs >= float(MIN_DI_DIFF)
+            # Numeric gates (ADX + conf + |DI|); direction agree is separate
+            numeric_gates_ok = adx_ok and conf_ok and di_ok
             proposed_signal = None
-            if gates_passed:
+            if numeric_gates_ok:
                 if pred == 2 and plus_di > minus_di:
                     proposed_signal = "BUY"
                 elif pred == 0 and minus_di > plus_di:
                     proposed_signal = "SELL"
-            # gates_passed means ADX+conf; proposed_signal also needs DI agree
             entry_gates_ok = proposed_signal is not None
+            # Legacy alias: adx_conf_ok historically meant "ready for direction check"
+            # Keep True only when ADX+conf pass (DI tracked separately via di_ok).
+            adx_conf_ok = adx_ok and conf_ok
+
+            gate_stats['scanned'] += 1
+            if not adx_ok:
+                gate_stats['fail_adx'] += 1
+            elif not conf_ok:
+                gate_stats['fail_conf'] += 1
+            elif not di_ok:
+                gate_stats['fail_di'] += 1
+            elif not entry_gates_ok:
+                gate_stats['fail_dir'] += 1
+            else:
+                gate_stats['actionable'] += 1
 
             ts_iso = now_utc.isoformat() + 'Z'
             # Journal every scanned whitelist symbol (always)
@@ -425,11 +532,15 @@ def scan_and_trade_v2():
                 'adx': adx,
                 'plus_di': plus_di,
                 'minus_di': minus_di,
+                'di_abs': di_abs,
                 'close': close_px,
                 'proposed_signal': proposed_signal,
                 'gates_passed': entry_gates_ok,
                 'closed_1h_bar': bar_key if ENTRY_ON_CLOSED_1H_ONLY else None,
-                'adx_conf_ok': gates_passed,
+                'adx_conf_ok': adx_conf_ok,
+                'adx_ok': adx_ok,
+                'conf_ok': conf_ok,
+                'di_ok': di_ok,
                 'observe_mode': bool(SIGNAL_OBSERVE_MODE),
             })
 
@@ -440,25 +551,31 @@ def scan_and_trade_v2():
                 signal = None
 
             if signal and _in_cooldown(symbol):
-                logger.debug(f"Skip {symbol}: cooldown ({COOLDOWN_HOURS}h / {MIN_BARS_BETWEEN_TRADES} bars)")
+                gate_stats['cooldown'] += 1
+                logger.info(
+                    f"Skip {symbol}: cooldown ({COOLDOWN_HOURS}h / {MIN_BARS_BETWEEN_TRADES} bars)"
+                )
                 signal = None
 
             # 最大同时持仓限制
             if signal and len(positions) >= MAX_CONCURRENT_POSITIONS:
-                logger.debug(
+                gate_stats['max_pos'] += 1
+                logger.info(
                     f"Skip {symbol} {signal}: max concurrent positions "
                     f"({MAX_CONCURRENT_POSITIONS})"
                 )
                 signal = None
 
             if signal and not can_open_new:
-                logger.debug(f"Skip {symbol} {signal}: cash/equity guard")
+                gate_stats['cash_guard'] += 1
+                logger.info(f"Skip {symbol} {signal}: cash/equity guard")
                 signal = None
 
 
             # 同一根已收盘 1h K 只评估/开仓一次（5min 扫描去重）
             if signal and ENTRY_ON_CLOSED_1H_ONLY:
                 if signal_bars.get(symbol) == bar_key:
+                    gate_stats['bar_dedupe'] += 1
                     signal = None
                 elif not SIGNAL_OBSERVE_MODE:
                     # reserve bar on actual open below; mark when we attempt entry
@@ -558,9 +675,22 @@ def scan_and_trade_v2():
     logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
     logger.info(f"Closed positions: {len(closed_positions)}")
     for item in closed_positions:
-        sym, pnl = item[0], item[1]
-        reason = item[3] if len(item) > 3 else ''
-        logger.info(f"  {sym}: ${pnl:+.2f} {reason}")
+        if isinstance(item, dict):
+            logger.info(
+                f"  {item['symbol']}: ${item['pnl']:+.2f} {item.get('reason','')} "
+                f"side={item.get('side')} hold_h={item.get('hold_hours')}"
+            )
+        else:
+            sym, pnl = item[0], item[1]
+            reason = item[3] if len(item) > 3 else ''
+            logger.info(f"  {sym}: ${pnl:+.2f} {reason}")
+    logger.info(
+        "Gates: scanned={scanned} actionable={actionable} "
+        "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} fail_dir={fail_dir} "
+        "cooldown={cooldown} max_pos={max_pos} cash={cash_guard} dedupe={bar_dedupe}".format(
+            **gate_stats
+        )
+    )
     if SIGNAL_OBSERVE_MODE:
         logger.info(f"Observed (not opened): {len(observed_signals)}")
         for e in observed_signals:

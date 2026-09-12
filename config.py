@@ -122,9 +122,9 @@ SLIPPAGE_ATR_FRAC = 0.0     # 可选：>0 时再加 atr*frac 不利滑点；0=�
 # ========================
 # Universe: TRADING_SYMBOLS = ETH/BNB/SOL/XRP（纸面踢 BTC；模型仍 multi_full 五币合训）
 # Timeframe: 1h K；Scan: SCAN_INTERVAL=300s（5 min）
-# SIGNAL_OBSERVE_MODE=True（仅 journal；翻 False 即开纸仓）
-# Gates: CONFIDENCE_THRESHOLD=0.80, ADX_STRONG_THRESHOLD=25, DI 方向过滤保留
+# SIGNAL_OBSERVE_MODE=False（真实纸仓；True=仅 journal）
+# Gates: CONFIDENCE_THRESHOLD=0.85, ADX_STRONG_THRESHOLD=35, MIN_DI_DIFF=15, DI 方向一致
 # Risk: RISK_PER_TRADE_PCT=0.02, LEVERAGE=2.0, SL=1.5 ATR, TP RR=2.5,
-#       TRAILING_STOP_ATR=1.5, TRAIL_ACTIVATE_R=1.0, MAX_MARGIN_PCT=0.40,
+#       TRAILING_STOP_ATR=1.5, TRAIL_ACTIVATE_R=99 (trail≈OFF), MAX_MARGIN_PCT=0.40,
 #       MAX_CONCURRENT_POSITIONS=2, COOLDOWN=6h/bars, MAX_HOLD_HOURS=24
 # Costs: SLIPPAGE_BPS=2.0 (+ optional ATR frac), fee_rate=0.0004 on slipped notional
