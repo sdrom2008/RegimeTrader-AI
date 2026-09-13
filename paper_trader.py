@@ -179,6 +179,7 @@ def make_binance_spot_exchange():
     """Public spot via data-api.binance.vision (avoids api.binance.com 451)."""
     exchange = ccxt.binance({
         'enableRateLimit': True,
+        'timeout': 20000,  # ms — fail hung public calls instead of stalling the loop
         'options': {
             'defaultType': 'spot',
             'fetchMarkets': ['spot'],
@@ -397,17 +398,19 @@ def scan_and_trade_v2():
 
     # 4) 扫描新机会 / 记 journal
     logger.info(f"Scanning symbols (TRADING_SYMBOLS whitelist / top {SCAN_LIMIT})...")
+    # Whitelist path: never load_markets/fetch_tickers (full universe fetch can hang for hours).
     try:
-        exchange.load_markets()
-        tickers = exchange.fetch_tickers()
-        usdt_pairs = [s for s, t in tickers.items() if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s]
-        usdt_pairs.sort(key=lambda s: (tickers[s].get('quoteVolume') or 0), reverse=True)
-
-        # 白名单锁定训练集币种；空列表则扫 top SCAN_LIMIT
         if TRADING_SYMBOLS:
             symbols = list(TRADING_SYMBOLS)
             logger.info(f"白名单锁定: {symbols}")
         else:
+            exchange.load_markets()
+            tickers = fetch_with_retry(exchange.fetch_tickers, label='fetch_tickers')
+            usdt_pairs = [
+                s for s, t in tickers.items()
+                if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s
+            ]
+            usdt_pairs.sort(key=lambda s: (tickers[s].get('quoteVolume') or 0), reverse=True)
             symbols = usdt_pairs[:SCAN_LIMIT]
     except Exception as e:
         logger.error(f"Fetch tickers failed: {e}")
@@ -426,6 +429,9 @@ def scan_and_trade_v2():
         'cash_guard': 0,
         'bar_dedupe': 0,
         'actionable': 0,
+        'max_adx': 0.0,
+        'max_di': 0.0,
+        'max_conf': 0.0,
     }
 
     def _in_cooldown(sym: str) -> bool:
@@ -510,6 +516,12 @@ def scan_and_trade_v2():
             adx_conf_ok = adx_ok and conf_ok
 
             gate_stats['scanned'] += 1
+            if adx > gate_stats['max_adx']:
+                gate_stats['max_adx'] = adx
+            if di_abs > gate_stats['max_di']:
+                gate_stats['max_di'] = di_abs
+            if confidence > gate_stats['max_conf']:
+                gate_stats['max_conf'] = confidence
             if not adx_ok:
                 gate_stats['fail_adx'] += 1
             elif not conf_ok:
@@ -687,7 +699,8 @@ def scan_and_trade_v2():
     logger.info(
         "Gates: scanned={scanned} actionable={actionable} "
         "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} fail_dir={fail_dir} "
-        "cooldown={cooldown} max_pos={max_pos} cash={cash_guard} dedupe={bar_dedupe}".format(
+        "cooldown={cooldown} max_pos={max_pos} cash={cash_guard} dedupe={bar_dedupe} "
+        "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}".format(
             **gate_stats
         )
     )

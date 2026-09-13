@@ -31,6 +31,8 @@ from config import (
     SIGNAL_JOURNAL_FILE,
     CONFIDENCE_THRESHOLD,
     ADX_STRONG_THRESHOLD,
+    MIN_DI_DIFF,
+    TRADING_SYMBOLS,
 )
 
 _REPO = os.path.dirname(os.path.abspath(__file__))
@@ -103,7 +105,37 @@ def main():
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     horizon = int(LOOK_FORWARD_CANDLES)
 
-    actionable_raw = [
+    def _di_abs(r: dict) -> float:
+        if r.get('di_abs') is not None:
+            try:
+                return float(r['di_abs'])
+            except (TypeError, ValueError):
+                pass
+        try:
+            return abs(float(r.get('plus_di') or 0) - float(r.get('minus_di') or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _meets_current_gates(r: dict) -> bool:
+        """Re-score with *current* config — historical gates_passed used looser thresholds."""
+        if r.get('proposed_signal') not in ('BUY', 'SELL'):
+            return False
+        if TRADING_SYMBOLS and r.get('symbol') not in TRADING_SYMBOLS:
+            return False
+        try:
+            adx = float(r.get('adx') or 0)
+            conf = float(r.get('confidence') or 0)
+        except (TypeError, ValueError):
+            return False
+        if adx < float(ADX_STRONG_THRESHOLD) or conf < float(CONFIDENCE_THRESHOLD):
+            return False
+        if _di_abs(r) < float(MIN_DI_DIFF):
+            return False
+        return True
+
+    # Prefer live re-gate; fall back to stored gates_passed only if no numeric fields
+    actionable_raw = [r for r in rows if _meets_current_gates(r)]
+    legacy_raw = [
         r for r in rows
         if r.get('gates_passed') and r.get('proposed_signal') in ('BUY', 'SELL')
     ]
@@ -120,10 +152,13 @@ def main():
 
     print(f"Journal: {journal_path}")
     print(
-        f"Total lines: {len(rows)} | Actionable raw: {len(actionable_raw)} | "
-        f"deduped: {len(actionable)}"
+        f"Total lines: {len(rows)} | Current-gate raw: {len(actionable_raw)} | "
+        f"deduped: {len(actionable)} | legacy gates_passed raw: {len(legacy_raw)}"
     )
-    print(f"Horizon: {horizon}h | Conf>={CONFIDENCE_THRESHOLD} ADX>={ADX_STRONG_THRESHOLD}")
+    print(
+        f"Horizon: {horizon}h | Conf>={CONFIDENCE_THRESHOLD} "
+        f"ADX>={ADX_STRONG_THRESHOLD} |DI|>={MIN_DI_DIFF} whitelist={TRADING_SYMBOLS or 'ALL'}"
+    )
 
     exchange = make_exchange()
     results = []
@@ -204,7 +239,14 @@ def main():
     md.append(f'- Generated: `{generated}` (local)')
     md.append(f'- Journal: `{SIGNAL_JOURNAL_FILE}`')
     md.append(f'- Horizon: `{horizon}` × 1h bars')
-    md.append(f'- Gates: ADX>={ADX_STRONG_THRESHOLD}, conf>={CONFIDENCE_THRESHOLD}, DI agrees')
+    md.append(
+        f'- Gates (re-applied): ADX>={ADX_STRONG_THRESHOLD}, conf>={CONFIDENCE_THRESHOLD}, '
+        f'|DI|>={MIN_DI_DIFF}, whitelist={TRADING_SYMBOLS or "ALL"}'
+    )
+    md.append(
+        f'- Note: ignores historical `gates_passed` under looser thresholds '
+        f'(legacy raw={len(legacy_raw)})'
+    )
     md.append(f'- Rule: BUY hit if close_fwd>close; SELL hit if close_fwd<close')
     md.append('')
     md.append('## Hit rate by direction')

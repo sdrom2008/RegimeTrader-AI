@@ -8,7 +8,6 @@ import os
 import sys
 import time
 import datetime
-from pathlib import Path
 
 try:
     from dotenv import load_dotenv
@@ -59,6 +58,24 @@ def main():
     print(f"[*] Scan interval: {interval} seconds")
     print("[*] Starting main loop (reload only when config/paper_trader mtime changes)...\n")
 
+    heartbeat_path = os.path.join(repo, 'logs', 'executor_heartbeat.json')
+
+    def _write_heartbeat(phase: str, extra=None):
+        payload = {
+            'ts': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+            'phase': phase,
+            'pid': os.getpid(),
+        }
+        if extra:
+            payload.update(extra)
+        try:
+            os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
+            with open(heartbeat_path, 'w', encoding='utf-8') as hf:
+                import json as _json
+                _json.dump(payload, hf)
+        except Exception as he:
+            print(f"[!] heartbeat write failed: {he}")
+
     while True:
         try:
             changed = []
@@ -75,11 +92,19 @@ def main():
                     # paper_trader imports config at load; reload after config
                     importlib.reload(_pt)
                 interval = getattr(_cfg, "SCAN_INTERVAL", interval)
+            _write_heartbeat('scan_start')
+            t0 = time.time()
             _pt.scan_and_trade_v2()
+            dt = time.time() - t0
+            print(f"[*] Scan done in {dt:.1f}s")
+            _write_heartbeat('scan_done', {'scan_seconds': round(dt, 2)})
+            if dt > max(60.0, float(interval) * 0.8):
+                print(f"[!] Slow scan: {dt:.1f}s (interval={interval}s)")
         except Exception as e:
             print(f"[!] Executor error: {e}")
             import traceback
             traceback.print_exc()
+            _write_heartbeat('error', {'error': str(e)[:200]})
 
         # 等待下一轮
         time.sleep(interval)
