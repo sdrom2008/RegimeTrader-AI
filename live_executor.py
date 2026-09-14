@@ -97,7 +97,15 @@ def main():
             _pt.scan_and_trade_v2()
             dt = time.time() - t0
             print(f"[*] Scan done in {dt:.1f}s")
-            _write_heartbeat('scan_done', {'scan_seconds': round(dt, 2)})
+            snap = getattr(_pt, 'LAST_SCAN_SNAPSHOT', None) or {}
+            hb_extra = {'scan_seconds': round(dt, 2)}
+            for k in (
+                'equity', 'balance', 'positions', 'actionable',
+                'max_adx', 'max_di', 'max_conf', 'ret_pct', 'quiet',
+            ):
+                if k in snap:
+                    hb_extra[k] = snap[k]
+            _write_heartbeat('scan_done', hb_extra)
             if dt > max(60.0, float(interval) * 0.8):
                 print(f"[!] Slow scan: {dt:.1f}s (interval={interval}s)")
         except Exception as e:

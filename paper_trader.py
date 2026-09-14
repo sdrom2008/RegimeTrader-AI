@@ -62,6 +62,10 @@ DRY_RUN = os.environ.get('DRY_RUN', '0') == '1'
 
 CLASS_NAMES = {0: 'Down', 1: 'Osc/HOLD', 2: 'Up'}
 
+# Last scan metrics for executor heartbeat / monitors
+LAST_SCAN_SNAPSHOT = {}
+_SCAN_SEQ = 0
+
 # 宏风险监控（全局单例，避免重复抓取）
 RISK_CHECK_INTERVAL = 600  # 秒，10分钟
 _last_risk_check = None
@@ -193,11 +197,9 @@ def make_binance_spot_exchange():
     return exchange
 
 def scan_and_trade_v2():
-    logger.info(f"{'='*60}")
-    logger.info(f"🚀 RegimeTrader AI v2 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    if SIGNAL_OBSERVE_MODE:
-        logger.info("📡 SIGNAL_OBSERVE_MODE=ON — journal only, no new opens")
-    logger.info(f"{'='*60}")
+    global _SCAN_SEQ, LAST_SCAN_SNAPSHOT
+    _SCAN_SEQ += 1
+    force_verbose = (_SCAN_SEQ % 12 == 1)
 
     # 加载模型（mtime 缓存；优先 multi_full，缺失则回退 quantile）
     try:
@@ -218,7 +220,18 @@ def scan_and_trade_v2():
     balance = state['balance']
     positions = state['positions']
     signal_bars = state.setdefault('signal_bars', {})  # symbol -> last closed 1h bar iso used for entry
-    logger.info(f"Balance: ${balance:.2f} | Positions: {len(positions)}")
+    verbose = force_verbose or bool(positions) or SIGNAL_OBSERVE_MODE
+    if verbose:
+        logger.info(f"{'='*60}")
+        logger.info(f"🚀 RegimeTrader AI v2 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if SIGNAL_OBSERVE_MODE:
+            logger.info("📡 SIGNAL_OBSERVE_MODE=ON — journal only, no new opens")
+        logger.info(f"{'='*60}")
+        logger.info(f"Balance: ${balance:.2f} | Positions: {len(positions)}")
+    else:
+        logger.debug(
+            f"quiet scan #{_SCAN_SEQ} balance=${balance:.2f} positions={len(positions)}"
+        )
 
     fee_rate = 0.0004
     exchange = make_binance_spot_exchange()
@@ -379,7 +392,8 @@ def scan_and_trade_v2():
     # 2) 计算总权益
     margin_used = sum(p['margin'] for p in positions.values())
     total_equity = balance + margin_used + unrealized_total
-    logger.info(f"Equity: ${total_equity:.2f} | Cash: ${balance:.2f} | Margin: ${margin_used:.2f}")
+    if verbose or closed_positions:
+        logger.info(f"Equity: ${total_equity:.2f} | Cash: ${balance:.2f} | Margin: ${margin_used:.2f}")
 
     # Weird equity/cash: cash ~0 while margin fully tied up → do not open more
     can_open_new = True
@@ -397,12 +411,14 @@ def scan_and_trade_v2():
     adjusted_risk_pct = RISK_PER_TRADE_PCT
 
     # 4) 扫描新机会 / 记 journal
-    logger.info(f"Scanning symbols (TRADING_SYMBOLS whitelist / top {SCAN_LIMIT})...")
+    if verbose:
+        logger.info(f"Scanning symbols (TRADING_SYMBOLS whitelist / top {SCAN_LIMIT})...")
     # Whitelist path: never load_markets/fetch_tickers (full universe fetch can hang for hours).
     try:
         if TRADING_SYMBOLS:
             symbols = list(TRADING_SYMBOLS)
-            logger.info(f"白名单锁定: {symbols}")
+            if verbose:
+                logger.info(f"白名单锁定: {symbols}")
         else:
             exchange.load_markets()
             tickers = fetch_with_retry(exchange.fetch_tickers, label='fetch_tickers')
@@ -682,37 +698,72 @@ def scan_and_trade_v2():
     state['signal_bars'] = signal_bars
     save_state(state)
 
-    # 5) 输出摘要
-    logger.info(f"\n--- Summary ---")
-    logger.info(f"Equity: ${total_equity:.2f} ({((total_equity/10000)-1)*100:+.1f}%)")
-    logger.info(f"Closed positions: {len(closed_positions)}")
-    for item in closed_positions:
-        if isinstance(item, dict):
-            logger.info(
-                f"  {item['symbol']}: ${item['pnl']:+.2f} {item.get('reason','')} "
-                f"side={item.get('side')} hold_h={item.get('hold_hours')}"
-            )
-        else:
-            sym, pnl = item[0], item[1]
-            reason = item[3] if len(item) > 3 else ''
-            logger.info(f"  {sym}: ${pnl:+.2f} {reason}")
-    logger.info(
-        "Gates: scanned={scanned} actionable={actionable} "
-        "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} fail_dir={fail_dir} "
-        "cooldown={cooldown} max_pos={max_pos} cash={cash_guard} dedupe={bar_dedupe} "
-        "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}".format(
-            **gate_stats
-        )
+    # 5) 输出摘要 + heartbeat snapshot
+    ret_pct = ((total_equity / 10000) - 1) * 100
+    quiet = (
+        len(closed_positions) == 0
+        and len(new_entries) == 0
+        and len(positions) == 0
+        and int(gate_stats.get('actionable') or 0) == 0
+        and not SIGNAL_OBSERVE_MODE
     )
-    if SIGNAL_OBSERVE_MODE:
-        logger.info(f"Observed (not opened): {len(observed_signals)}")
-        for e in observed_signals:
-            logger.info(f"  {e}")
-        logger.info(f"New entries: 0 (SIGNAL_OBSERVE_MODE)")
+    LAST_SCAN_SNAPSHOT = {
+        'ts': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+        'equity': round(float(total_equity), 2),
+        'balance': round(float(balance), 2),
+        'positions': len(positions),
+        'closed': len(closed_positions),
+        'new_entries': len(new_entries),
+        'actionable': int(gate_stats.get('actionable') or 0),
+        'max_adx': round(float(gate_stats.get('max_adx') or 0), 2),
+        'max_di': round(float(gate_stats.get('max_di') or 0), 2),
+        'max_conf': round(float(gate_stats.get('max_conf') or 0), 4),
+        'fail_adx': int(gate_stats.get('fail_adx') or 0),
+        'fail_conf': int(gate_stats.get('fail_conf') or 0),
+        'fail_di': int(gate_stats.get('fail_di') or 0),
+        'ret_pct': round(float(ret_pct), 2),
+        'scan_seq': _SCAN_SEQ,
+        'quiet': bool(quiet and not force_verbose),
+    }
+    if quiet and not force_verbose:
+        logger.info(
+            "Scan idle equity=${eq:.2f} ({ret:+.1f}%) "
+            "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} "
+            "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}".format(
+                eq=total_equity, ret=ret_pct, **gate_stats
+            )
+        )
     else:
-        logger.info(f"New entries: {len(new_entries)}")
-        for e in new_entries:
-            logger.info(f"  {e}")
+        logger.info(f"\n--- Summary ---")
+        logger.info(f"Equity: ${total_equity:.2f} ({ret_pct:+.1f}%)")
+        logger.info(f"Closed positions: {len(closed_positions)}")
+        for item in closed_positions:
+            if isinstance(item, dict):
+                logger.info(
+                    f"  {item['symbol']}: ${item['pnl']:+.2f} {item.get('reason','')} "
+                    f"side={item.get('side')} hold_h={item.get('hold_hours')}"
+                )
+            else:
+                sym, pnl = item[0], item[1]
+                reason = item[3] if len(item) > 3 else ''
+                logger.info(f"  {sym}: ${pnl:+.2f} {reason}")
+        logger.info(
+            "Gates: scanned={scanned} actionable={actionable} "
+            "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} fail_dir={fail_dir} "
+            "cooldown={cooldown} max_pos={max_pos} cash={cash_guard} dedupe={bar_dedupe} "
+            "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}".format(
+                **gate_stats
+            )
+        )
+        if SIGNAL_OBSERVE_MODE:
+            logger.info(f"Observed (not opened): {len(observed_signals)}")
+            for e in observed_signals:
+                logger.info(f"  {e}")
+            logger.info(f"New entries: 0 (SIGNAL_OBSERVE_MODE)")
+        else:
+            logger.info(f"New entries: {len(new_entries)}")
+            for e in new_entries:
+                logger.info(f"  {e}")
 
 if __name__ == '__main__':
     scan_and_trade_v2()

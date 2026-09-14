@@ -277,6 +277,56 @@ def main():
         md.append('_No matured actionable signals yet. Re-run after ≥24h of observe logging._')
         md.append('')
 
+    # Near-miss counts (uniq symbol+closed_1h_bar, last 72h, trend preds only)
+    cut72 = now - datetime.timedelta(hours=72)
+    variants = [
+        ('35/0.85/15', 35.0, 0.85, 15.0),
+        ('30/0.85/15', 30.0, 0.85, 15.0),
+        ('35/0.80/15', 35.0, 0.80, 15.0),
+        ('30/0.80/12', 30.0, 0.80, 12.0),
+    ]
+    near_lines = []
+    for label, adx_th, conf_th, di_th in variants:
+        seen_nm = set()
+        n_pass = 0
+        for r in rows:
+            try:
+                ts = parse_ts(r.get('timestamp', ''))
+            except Exception:
+                continue
+            if ts < cut72:
+                continue
+            if r.get('pred') not in (0, 2):
+                continue
+            if TRADING_SYMBOLS and r.get('symbol') not in TRADING_SYMBOLS:
+                continue
+            bar = r.get('closed_1h_bar') or (str(r.get('timestamp', ''))[:13] + ':00')
+            key = (r.get('symbol'), bar)
+            if key in seen_nm:
+                continue
+            seen_nm.add(key)
+            try:
+                adx = float(r.get('adx') or 0)
+                conf = float(r.get('confidence') or 0)
+            except (TypeError, ValueError):
+                continue
+            if adx >= adx_th and conf >= conf_th and _di_abs(r) >= di_th:
+                n_pass += 1
+        near_lines.append(f'| `{label}` | {n_pass} | {len(seen_nm)} |')
+        print(f"Near-miss 72h {label}: pass={n_pass} uniq_trend_bars={len(seen_nm)}")
+
+    md.append('## Near-miss gate variants (last 72h, uniq bars, pred in {{0,2}})')
+    md.append('')
+    md.append('| Gates ADX/conf/|DI| | Pass | Uniq trend bars scanned |')
+    md.append('|---|---:|---:|')
+    md.extend(near_lines)
+    md.append('')
+    md.append(
+        '_Pass = would clear that gate set. Live paper still uses config thresholds; '
+        'this table is research-only._'
+    )
+    md.append('')
+
     with open(out_md, 'w', encoding='utf-8') as f:
         f.write('\n'.join(md) + '\n')
     print(f"\nWrote {out_md}")
