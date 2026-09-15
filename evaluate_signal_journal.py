@@ -327,6 +327,123 @@ def main():
     )
     md.append('')
 
+    # |DI| choke breakdown + last-N-hours pass counts (current live gates)
+    live_adx = float(ADX_STRONG_THRESHOLD)
+    live_conf = float(CONFIDENCE_THRESHOLD)
+    live_di = float(MIN_DI_DIFF)
+    uniq72 = []
+    seen72 = set()
+    for r in rows:
+        try:
+            ts = parse_ts(r.get('timestamp', ''))
+        except Exception:
+            continue
+        if ts < cut72:
+            continue
+        if r.get('pred') not in (0, 2):
+            continue
+        if TRADING_SYMBOLS and r.get('symbol') not in TRADING_SYMBOLS:
+            continue
+        bar = r.get('closed_1h_bar') or (str(r.get('timestamp', ''))[:13] + ':00')
+        key = (r.get('symbol'), bar)
+        if key in seen72:
+            continue
+        seen72.add(key)
+        try:
+            adx = float(r.get('adx') or 0)
+            conf = float(r.get('confidence') or 0)
+        except (TypeError, ValueError):
+            continue
+        uniq72.append({
+            'symbol': r.get('symbol'),
+            'ts': ts,
+            'adx': adx,
+            'conf': conf,
+            'di': _di_abs(r),
+        })
+
+    choke = defaultdict(int)
+    for b in uniq72:
+        reasons = []
+        if b['adx'] < live_adx:
+            reasons.append('adx')
+        if b['conf'] < live_conf:
+            reasons.append('conf')
+        if b['di'] < live_di:
+            reasons.append('di')
+        if not reasons:
+            choke['PASS'] += 1
+        else:
+            choke['fail_any'] += 1
+            for x in reasons:
+                choke[f'fail_{x}'] += 1
+            choke['combo_' + '+'.join(reasons)] += 1
+
+    md.append(
+        f'## Choke breakdown (72h uniq trend bars vs live '
+        f'{live_adx:g}/{live_conf:g}/{live_di:g})'
+    )
+    md.append('')
+    md.append(f'- Uniq trend bars: **{len(uniq72)}**')
+    md.append(
+        f'- fail_adx={choke.get("fail_adx", 0)} fail_conf={choke.get("fail_conf", 0)} '
+        f'fail_di={choke.get("fail_di", 0)} PASS={choke.get("PASS", 0)} '
+        f'fail_any={choke.get("fail_any", 0)}'
+    )
+    md.append('')
+    md.append('| Combo | N |')
+    md.append('|---|---:|')
+    for k, v in sorted(choke.items()):
+        if k.startswith('combo_') or k == 'PASS':
+            md.append(f'| `{k}` | {v} |')
+    md.append('')
+    print(
+        f"Choke72 live: uniq={len(uniq72)} fail_adx={choke.get('fail_adx', 0)} "
+        f"fail_conf={choke.get('fail_conf', 0)} fail_di={choke.get('fail_di', 0)} "
+        f"PASS={choke.get('PASS', 0)}"
+    )
+
+    # Pass counts in last N hours for research variants
+    hour_windows = (6, 12, 24, 72)
+    md.append('## Pass counts by recent window (uniq trend bars)')
+    md.append('')
+    header = '| Gates | ' + ' | '.join(f'{h}h' for h in hour_windows) + ' |'
+    md.append(header)
+    md.append('|---|' + '|'.join(['---:' ] * len(hour_windows)) + '|')
+    for label, adx_th, conf_th, di_th in variants:
+        counts = []
+        for h in hour_windows:
+            cut = now - datetime.timedelta(hours=h)
+            seen_h = set()
+            n_pass = 0
+            for r in rows:
+                try:
+                    ts = parse_ts(r.get('timestamp', ''))
+                except Exception:
+                    continue
+                if ts < cut:
+                    continue
+                if r.get('pred') not in (0, 2):
+                    continue
+                if TRADING_SYMBOLS and r.get('symbol') not in TRADING_SYMBOLS:
+                    continue
+                bar = r.get('closed_1h_bar') or (str(r.get('timestamp', ''))[:13] + ':00')
+                key = (r.get('symbol'), bar)
+                if key in seen_h:
+                    continue
+                seen_h.add(key)
+                try:
+                    adx = float(r.get('adx') or 0)
+                    conf = float(r.get('confidence') or 0)
+                except (TypeError, ValueError):
+                    continue
+                if adx >= adx_th and conf >= conf_th and _di_abs(r) >= di_th:
+                    n_pass += 1
+            counts.append(str(n_pass))
+        md.append(f'| `{label}` | ' + ' | '.join(counts) + ' |')
+        print(f"Pass windows {label}: " + ' '.join(f'{h}h={c}' for h, c in zip(hour_windows, counts)))
+    md.append('')
+
     with open(out_md, 'w', encoding='utf-8') as f:
         f.write('\n'.join(md) + '\n')
     print(f"\nWrote {out_md}")

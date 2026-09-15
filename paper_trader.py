@@ -707,6 +707,33 @@ def scan_and_trade_v2():
         and int(gate_stats.get('actionable') or 0) == 0
         and not SIGNAL_OBSERVE_MODE
     )
+    # Idle since last closed trade (paper state trade_history)
+    last_trade_iso = None
+    idle_hours = None
+    try:
+        hist = state.get('trade_history') or []
+        if hist:
+            # prefer exit_time; fall back to any timestamp-like field
+            times = []
+            for t in hist:
+                if not isinstance(t, dict):
+                    continue
+                for k in ('exit_time', 'timestamp', 'time'):
+                    if t.get(k):
+                        times.append(str(t[k]))
+                        break
+            if times:
+                last_trade_iso = max(times)
+                ts_last = datetime.datetime.fromisoformat(last_trade_iso.replace('Z', '+00:00'))
+                if ts_last.tzinfo is None:
+                    ts_last = ts_last.replace(tzinfo=datetime.timezone.utc)
+                idle_hours = (
+                    datetime.datetime.now(datetime.timezone.utc) - ts_last
+                ).total_seconds() / 3600.0
+    except Exception:
+        last_trade_iso = None
+        idle_hours = None
+
     LAST_SCAN_SNAPSHOT = {
         'ts': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
         'equity': round(float(total_equity), 2),
@@ -724,13 +751,21 @@ def scan_and_trade_v2():
         'ret_pct': round(float(ret_pct), 2),
         'scan_seq': _SCAN_SEQ,
         'quiet': bool(quiet and not force_verbose),
+        'last_trade_iso': last_trade_iso,
+        'idle_hours_since_last_trade': (
+            round(float(idle_hours), 2) if idle_hours is not None else None
+        ),
     }
     if quiet and not force_verbose:
+        idle_s = (
+            f" idle_h={idle_hours:.1f}" if idle_hours is not None else ""
+        )
         logger.info(
             "Scan idle equity=${eq:.2f} ({ret:+.1f}%) "
             "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} "
-            "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}".format(
-                eq=total_equity, ret=ret_pct, **gate_stats
+            "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}"
+            "{idle}".format(
+                eq=total_equity, ret=ret_pct, idle=idle_s, **gate_stats
             )
         )
     else:

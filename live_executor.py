@@ -102,6 +102,8 @@ def main():
             for k in (
                 'equity', 'balance', 'positions', 'actionable',
                 'max_adx', 'max_di', 'max_conf', 'ret_pct', 'quiet',
+                'fail_adx', 'fail_conf', 'fail_di',
+                'last_trade_iso', 'idle_hours_since_last_trade',
             ):
                 if k in snap:
                     hb_extra[k] = snap[k]
