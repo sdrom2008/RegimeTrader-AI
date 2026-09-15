@@ -23,7 +23,7 @@ ADX_STRONG_THRESHOLD = 35      # edge切片：强趋势才开枪
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
 MIN_DI_DIFF = 15.0             # |+DI - -DI| 最小差（强方向）
 # CONFIDENCE_THRESHOLD = 0.75  # 模型置信度阈值（was 0.70；日更再抬）
-CONFIDENCE_THRESHOLD = 0.85    # edge切片候选：少开高打
+CONFIDENCE_THRESHOLD = 0.80    # 纸面攒样本：0.85→0.80；ADX35/|DI|15 不变
 
 # ========================
 # 信号观察模式（不新开仓，只记 journal 评估准确率）
@@ -123,7 +123,7 @@ SLIPPAGE_ATR_FRAC = 0.0     # 可选：>0 时再加 atr*frac 不利滑点；0=�
 # Universe: TRADING_SYMBOLS = ETH/BNB/SOL/XRP（纸面踢 BTC；模型仍 multi_full 五币合训）
 # Timeframe: 1h K；Scan: SCAN_INTERVAL=300s（5 min）
 # SIGNAL_OBSERVE_MODE=False（真实纸仓；True=仅 journal）
-# Gates: CONFIDENCE_THRESHOLD=0.85, ADX_STRONG_THRESHOLD=35, MIN_DI_DIFF=15, DI 方向一致
+# Gates: CONFIDENCE_THRESHOLD=0.80, ADX_STRONG_THRESHOLD=35, MIN_DI_DIFF=15, DI 方向一致
 # Risk: RISK_PER_TRADE_PCT=0.02, LEVERAGE=2.0, SL=1.5 ATR, TP RR=2.5,
 #       TRAILING_STOP_ATR=1.5, TRAIL_ACTIVATE_R=99 (trail≈OFF), MAX_MARGIN_PCT=0.40,
 #       MAX_CONCURRENT_POSITIONS=2, COOLDOWN=6h/bars, MAX_HOLD_HOURS=24
