@@ -5,7 +5,7 @@ Offline historical backtest for RegimeTrader-AI v2 multi model.
 Mirrors paper_trader entry/exit as closely as practical:
 - Features via prepare_features_v2
 - Model: regime_model_v2_multi_full.pkl (fallback quantile)
-- Gates: ADX + confidence + DI direction filter from config.py
+- Gates: ADX + confidence + |DI|>=MIN_DI_DIFF + DI direction filter from config.py
 - Long/short with ATR SL + trailing + TP (BUY high>=tp / SELL low<=tp); per-symbol cooldown
 - Fee 4bps + adverse slippage (SLIPPAGE_BPS / optional ATR frac); risk sizing + leverage from config
 
@@ -35,6 +35,7 @@ import pandas as pd
 from config import (
     ADX_STRONG_THRESHOLD,
     CONFIDENCE_THRESHOLD,
+    MIN_DI_DIFF,
     LEVERAGE,
     RISK_PER_TRADE_PCT,
     STOP_LOSS_ATR_MULT,
@@ -163,13 +164,19 @@ def simulate_symbol(
     times = df.index.to_numpy()
 
     # Precompute gated signals: None / BUY / SELL
-    # DI direction filter (align paper_trader v3): BUY only if +DI>-DI & pred==2;
-    # SELL only if -DI>+DI & pred==0
+    # Align paper_trader: ADX + conf + |DI|>=MIN_DI_DIFF, then DI direction
+    # (BUY only if +DI>-DI & pred==2; SELL only if -DI>+DI & pred==0)
     plus_di = df["+DI"].to_numpy(dtype=float)
     minus_di = df["-DI"].to_numpy(dtype=float)
+    min_di = float(MIN_DI_DIFF)
     signals = np.empty(len(df), dtype=object)
     for i in range(len(df)):
-        if adxs[i] >= ADX_STRONG_THRESHOLD and confs[i] >= CONFIDENCE_THRESHOLD:
+        di_abs = abs(float(plus_di[i]) - float(minus_di[i]))
+        if (
+            adxs[i] >= ADX_STRONG_THRESHOLD
+            and confs[i] >= CONFIDENCE_THRESHOLD
+            and di_abs >= min_di
+        ):
             if preds[i] == 2 and plus_di[i] > minus_di[i]:
                 signals[i] = "BUY"
             elif preds[i] == 0 and minus_di[i] > plus_di[i]:
@@ -884,7 +891,7 @@ def main():
     slip = args.slippage_bps if args.slippage_bps is not None else float(SLIPPAGE_BPS)
     print(
         f"[*] Gates: ADX>={ADX_STRONG_THRESHOLD} conf>={CONFIDENCE_THRESHOLD} "
-        f"DI-filter TP=on cooldown={cd}bars risk={RISK_PER_TRADE_PCT} "
+        f"|DI|>={MIN_DI_DIFF} DI-dir TP=on cooldown={cd}bars risk={RISK_PER_TRADE_PCT} "
         f"SL={STOP_LOSS_ATR_MULT} TP_RR={TAKE_PROFIT_RR} slip={slip}bps"
     )
     print(f"[*] Symbols: {args.symbols} | years={args.years or 'full'} | mode={args.mode}")

@@ -55,7 +55,16 @@ def main():
     }
     last_mtimes = {k: _file_mtime(p) for k, p in watch.items()}
 
+    def _print_gates(prefix="[*]"):
+        print(
+            f"{prefix} Gates: ADX>={getattr(_cfg, 'ADX_STRONG_THRESHOLD', '?')} "
+            f"conf>={getattr(_cfg, 'CONFIDENCE_THRESHOLD', '?')} "
+            f"|DI|>={getattr(_cfg, 'MIN_DI_DIFF', '?')} "
+            f"symbols={getattr(_cfg, 'TRADING_SYMBOLS', [])}"
+        )
+
     print(f"[*] Scan interval: {interval} seconds")
+    _print_gates()
     print("[*] Starting main loop (reload only when config/paper_trader mtime changes)...\n")
 
     heartbeat_path = os.path.join(repo, 'logs', 'executor_heartbeat.json')
@@ -92,6 +101,7 @@ def main():
                     # paper_trader imports config at load; reload after config
                     importlib.reload(_pt)
                 interval = getattr(_cfg, "SCAN_INTERVAL", interval)
+                _print_gates(prefix="[*] After reload")
             _write_heartbeat('scan_start')
             t0 = time.time()
             _pt.scan_and_trade_v2()
@@ -104,6 +114,7 @@ def main():
                 'max_adx', 'max_di', 'max_conf', 'ret_pct', 'quiet',
                 'fail_adx', 'fail_conf', 'fail_di',
                 'last_trade_iso', 'idle_hours_since_last_trade',
+                'gate_adx', 'gate_conf', 'gate_di',
             ):
                 if k in snap:
                     hb_extra[k] = snap[k]

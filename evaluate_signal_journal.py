@@ -322,8 +322,9 @@ def main():
     md.extend(near_lines)
     md.append('')
     md.append(
-        '_Pass = would clear that gate set. Live paper still uses config thresholds; '
-        'this table is research-only._'
+        f'_Pass = would clear that gate set. Live paper now uses '
+        f'ADX≥{ADX_STRONG_THRESHOLD:g}/conf≥{CONFIDENCE_THRESHOLD:g}/'
+        f'|DI|≥{MIN_DI_DIFF:g}; other rows are research-only._'
     )
     md.append('')
 
@@ -362,7 +363,10 @@ def main():
             'di': _di_abs(r),
         })
 
+    # Unordered: count every failing gate. Ordered: paper_trader first-fail
+    # (ADX -> conf -> |DI|), so daily ops match heartbeat fail_* sums.
     choke = defaultdict(int)
+    choke_ord = defaultdict(int)
     for b in uniq72:
         reasons = []
         if b['adx'] < live_adx:
@@ -373,11 +377,13 @@ def main():
             reasons.append('di')
         if not reasons:
             choke['PASS'] += 1
+            choke_ord['PASS'] += 1
         else:
             choke['fail_any'] += 1
             for x in reasons:
                 choke[f'fail_{x}'] += 1
             choke['combo_' + '+'.join(reasons)] += 1
+            choke_ord[f'fail_{reasons[0]}'] += 1
 
     md.append(
         f'## Choke breakdown (72h uniq trend bars vs live '
@@ -386,7 +392,15 @@ def main():
     md.append('')
     md.append(f'- Uniq trend bars: **{len(uniq72)}**')
     md.append(
-        f'- fail_adx={choke.get("fail_adx", 0)} fail_conf={choke.get("fail_conf", 0)} '
+        f'- Ordered first-fail (ADX→conf→|DI|, matches paper scan): '
+        f'fail_adx={choke_ord.get("fail_adx", 0)} '
+        f'fail_conf={choke_ord.get("fail_conf", 0)} '
+        f'fail_di={choke_ord.get("fail_di", 0)} '
+        f'PASS={choke_ord.get("PASS", 0)}'
+    )
+    md.append(
+        f'- Unordered (a bar can count in multiple fail_*): '
+        f'fail_adx={choke.get("fail_adx", 0)} fail_conf={choke.get("fail_conf", 0)} '
         f'fail_di={choke.get("fail_di", 0)} PASS={choke.get("PASS", 0)} '
         f'fail_any={choke.get("fail_any", 0)}'
     )
@@ -398,8 +412,17 @@ def main():
             md.append(f'| `{k}` | {v} |')
     md.append('')
     print(
-        f"Choke72 live: uniq={len(uniq72)} fail_adx={choke.get('fail_adx', 0)} "
-        f"fail_conf={choke.get('fail_conf', 0)} fail_di={choke.get('fail_di', 0)} "
+        f"Choke72 live ordered: uniq={len(uniq72)} "
+        f"fail_adx={choke_ord.get('fail_adx', 0)} "
+        f"fail_conf={choke_ord.get('fail_conf', 0)} "
+        f"fail_di={choke_ord.get('fail_di', 0)} "
+        f"PASS={choke_ord.get('PASS', 0)}"
+    )
+    print(
+        f"Choke72 live unordered: "
+        f"fail_adx={choke.get('fail_adx', 0)} "
+        f"fail_conf={choke.get('fail_conf', 0)} "
+        f"fail_di={choke.get('fail_di', 0)} "
         f"PASS={choke.get('PASS', 0)}"
     )
 

@@ -755,6 +755,10 @@ def scan_and_trade_v2():
         'idle_hours_since_last_trade': (
             round(float(idle_hours), 2) if idle_hours is not None else None
         ),
+        # Echo live thresholds so heartbeat proves hot-reload took effect
+        'gate_adx': float(ADX_STRONG_THRESHOLD),
+        'gate_conf': float(CONFIDENCE_THRESHOLD),
+        'gate_di': float(MIN_DI_DIFF),
     }
     if quiet and not force_verbose:
         idle_s = (
