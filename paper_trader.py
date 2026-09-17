@@ -138,18 +138,32 @@ def apply_slippage(price, side, is_buy_action, atr=0):
     return px * (1.0 - bps) - atr_pad
 
 
-def fetch_with_retry(fn, *args, retries=3, base_delay=0.6, label='fetch', **kwargs):
-    """Retry public Binance/data-api calls with exponential backoff."""
+def fetch_with_retry(fn, *args, retries=3, base_delay=0.6, label='fetch', warn_sec=8.0, **kwargs):
+    """Retry public Binance/data-api calls with exponential backoff.
+
+    Logs slow calls (>warn_sec) so hung geo/API paths show up before the
+    executor hard-timeout fires.
+    """
     last_err = None
     for attempt in range(int(retries)):
+        t0 = time.time()
         try:
-            return fn(*args, **kwargs)
+            out = fn(*args, **kwargs)
+            dt = time.time() - t0
+            if dt >= float(warn_sec):
+                logger.warning(f"{label} slow: {dt:.1f}s (attempt {attempt+1}/{retries})")
+            return out
         except Exception as e:
             last_err = e
+            dt = time.time() - t0
             if attempt + 1 >= int(retries):
+                logger.warning(f"{label} failed final ({attempt+1}/{retries}) after {dt:.1f}s: {e}")
                 break
             delay = float(base_delay) * (2 ** attempt)
-            logger.warning(f"{label} failed ({attempt+1}/{retries}): {e}; retry in {delay:.1f}s")
+            logger.warning(
+                f"{label} failed ({attempt+1}/{retries}) after {dt:.1f}s: {e}; "
+                f"retry in {delay:.1f}s"
+            )
             time.sleep(delay)
     raise last_err
 
@@ -181,9 +195,10 @@ def load_model_cached():
 
 def make_binance_spot_exchange():
     """Public spot via data-api.binance.vision (avoids api.binance.com 451)."""
+    # Keep timeout tight: executor also has SCAN_HARD_TIMEOUT_SEC as backstop.
     exchange = ccxt.binance({
         'enableRateLimit': True,
-        'timeout': 20000,  # ms — fail hung public calls instead of stalling the loop
+        'timeout': 15000,  # ms — fail hung public calls instead of stalling the loop
         'options': {
             'defaultType': 'spot',
             'fetchMarkets': ['spot'],
@@ -302,7 +317,13 @@ def scan_and_trade_v2():
                         'entry_time': pos.get('entry_time'), 'confidence': pos.get('confidence'),
                         'hold_hours': hold_h, 'tp': tp, 'sl': sl,
                     })
-                    logger.info(f"CLOSED LONG {sym} @{exit_price:.4f} ({exit_reason}) PnL:${pnl:.2f}")
+                    r_mult = (pnl / (amount * one_r)) if (amount and one_r and one_r > 0) else None
+                    _rm = f" R={r_mult:.2f}" if r_mult is not None else ""
+                    _hh = f" hold_h={hold_h:.1f}" if hold_h is not None else ""
+                    logger.info(
+                        f"CLOSED LONG {sym} @{exit_price:.4f} ({exit_reason}) "
+                        f"PnL:${pnl:.2f}{_rm}{_hh} tp={tp} sl={sl}"
+                    )
             elif pos['type'] == 'SELL':
                 unreal = (entry - price) * amount
                 unrealized_total += unreal
@@ -347,7 +368,13 @@ def scan_and_trade_v2():
                         'entry_time': pos.get('entry_time'), 'confidence': pos.get('confidence'),
                         'hold_hours': hold_h, 'tp': tp, 'sl': sl,
                     })
-                    logger.info(f"CLOSED SHORT {sym} @{exit_price:.4f} ({exit_reason}) PnL:${pnl:.2f}")
+                    r_mult = (pnl / (amount * one_r)) if (amount and one_r and one_r > 0) else None
+                    _rm = f" R={r_mult:.2f}" if r_mult is not None else ""
+                    _hh = f" hold_h={hold_h:.1f}" if hold_h is not None else ""
+                    logger.info(
+                        f"CLOSED SHORT {sym} @{exit_price:.4f} ({exit_reason}) "
+                        f"PnL:${pnl:.2f}{_rm}{_hh} tp={tp} sl={sl}"
+                    )
         except Exception as e:
             logger.warning(f"{sym} update error: {e}")
 

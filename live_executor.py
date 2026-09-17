@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import datetime
+import concurrent.futures
 
 try:
     from dotenv import load_dotenv
@@ -21,6 +22,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
     SCAN_INTERVAL,  # 扫描间隔（秒）
 )
+
+# Hard cap so a hung ccxt/DNS call cannot freeze the loop for hours.
+SCAN_HARD_TIMEOUT_SEC = float(os.environ.get('SCAN_HARD_TIMEOUT_SEC', '90'))
+# Keep heartbeat fresh while sleeping between scans (detect stalls externally).
+SLEEP_HEARTBEAT_SEC = float(os.environ.get('SLEEP_HEARTBEAT_SEC', '60'))
+
 
 def _file_mtime(path: str):
     try:
@@ -36,6 +43,7 @@ def main():
     - 调用 paper_trader.scan_and_trade_v2()
     - 处理异常并记录日志
     - 仅当 config/paper_trader 文件 mtime 变化时 reload（避免每轮重载 170MB+ 模型）
+    - scan hard-timeout + chunked sleep heartbeats（防 16h 级假死）
     """
     print(f"\n{'='*60}")
     print(f"🚀 RegimeTrader AI - Live Executor (v2)")
@@ -64,6 +72,7 @@ def main():
         )
 
     print(f"[*] Scan interval: {interval} seconds")
+    print(f"[*] Scan hard timeout: {SCAN_HARD_TIMEOUT_SEC:.0f}s | sleep heartbeat: {SLEEP_HEARTBEAT_SEC:.0f}s")
     _print_gates()
     print("[*] Starting main loop (reload only when config/paper_trader mtime changes)...\n")
 
@@ -85,7 +94,26 @@ def main():
         except Exception as he:
             print(f"[!] heartbeat write failed: {he}")
 
+    def _sleep_chunked(total_sec: float):
+        """Sleep in chunks; refresh heartbeat so monitors see liveness during idle."""
+        remaining = float(total_sec)
+        chunk = max(5.0, float(SLEEP_HEARTBEAT_SEC))
+        wake_at = time.time() + remaining
+        while remaining > 0:
+            step = min(chunk, remaining)
+            _write_heartbeat('sleeping', {
+                'sleep_remaining_sec': round(remaining, 1),
+                'next_scan_eta_sec': round(max(0.0, wake_at - time.time()), 1),
+                'scan_interval': float(interval),
+            })
+            time.sleep(step)
+            remaining = wake_at - time.time()
+
+    # Single worker so a timed-out scan cannot pile up threads (ccxt may still run until OS kills).
+    _scan_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='scan')
+
     while True:
+        loop_t0 = time.time()
         try:
             changed = []
             for key, path in watch.items():
@@ -102,33 +130,74 @@ def main():
                     importlib.reload(_pt)
                 interval = getattr(_cfg, "SCAN_INTERVAL", interval)
                 _print_gates(prefix="[*] After reload")
-            _write_heartbeat('scan_start')
+            _write_heartbeat('scan_start', {
+                'hard_timeout_sec': SCAN_HARD_TIMEOUT_SEC,
+            })
             t0 = time.time()
-            _pt.scan_and_trade_v2()
+            fut = _scan_pool.submit(_pt.scan_and_trade_v2)
+            timed_out = False
+            try:
+                fut.result(timeout=SCAN_HARD_TIMEOUT_SEC)
+            except concurrent.futures.TimeoutError:
+                timed_out = True
+                print(
+                    f"[!] Scan hard-timeout after {SCAN_HARD_TIMEOUT_SEC:.0f}s — "
+                    f"skipping rest of cycle (possible hung Binance/DNS). "
+                    f"Next scan will retry; consider restarting if this repeats."
+                )
+                _write_heartbeat('scan_timeout', {
+                    'scan_seconds': round(time.time() - t0, 2),
+                    'hard_timeout_sec': SCAN_HARD_TIMEOUT_SEC,
+                    'error': f'scan exceeded {SCAN_HARD_TIMEOUT_SEC:.0f}s',
+                })
+                # Do not wait forever on the stuck future; replace pool worker.
+                try:
+                    _scan_pool.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    _scan_pool.shutdown(wait=False)
+                _scan_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix='scan'
+                )
             dt = time.time() - t0
-            print(f"[*] Scan done in {dt:.1f}s")
-            snap = getattr(_pt, 'LAST_SCAN_SNAPSHOT', None) or {}
-            hb_extra = {'scan_seconds': round(dt, 2)}
-            for k in (
-                'equity', 'balance', 'positions', 'actionable',
-                'max_adx', 'max_di', 'max_conf', 'ret_pct', 'quiet',
-                'fail_adx', 'fail_conf', 'fail_di',
-                'last_trade_iso', 'idle_hours_since_last_trade',
-                'gate_adx', 'gate_conf', 'gate_di',
-            ):
-                if k in snap:
-                    hb_extra[k] = snap[k]
-            _write_heartbeat('scan_done', hb_extra)
-            if dt > max(60.0, float(interval) * 0.8):
-                print(f"[!] Slow scan: {dt:.1f}s (interval={interval}s)")
+            if not timed_out:
+                print(f"[*] Scan done in {dt:.1f}s")
+                snap = getattr(_pt, 'LAST_SCAN_SNAPSHOT', None) or {}
+                hb_extra = {'scan_seconds': round(dt, 2)}
+                for k in (
+                    'equity', 'balance', 'positions', 'actionable',
+                    'max_adx', 'max_di', 'max_conf', 'ret_pct', 'quiet',
+                    'fail_adx', 'fail_conf', 'fail_di',
+                    'last_trade_iso', 'idle_hours_since_last_trade',
+                    'gate_adx', 'gate_conf', 'gate_di',
+                ):
+                    if k in snap:
+                        hb_extra[k] = snap[k]
+                _write_heartbeat('scan_done', hb_extra)
+                if dt > max(60.0, float(interval) * 0.8):
+                    print(f"[!] Slow scan: {dt:.1f}s (interval={interval}s)")
         except Exception as e:
             print(f"[!] Executor error: {e}")
             import traceback
             traceback.print_exc()
             _write_heartbeat('error', {'error': str(e)[:200]})
 
-        # 等待下一轮
-        time.sleep(interval)
+        # Wall-clock jump detection (VM pause / long hang waking into sleep)
+        slept_plan = float(interval)
+        pre_sleep = time.time()
+        _sleep_chunked(slept_plan)
+        slept_actual = time.time() - pre_sleep
+        if slept_actual > slept_plan * 2.5 + 30:
+            jump_h = (slept_actual - slept_plan) / 3600.0
+            print(
+                f"[!] Wall-clock jump during sleep: planned={slept_plan:.0f}s "
+                f"actual={slept_actual:.0f}s (~{jump_h:.2f}h extra) — possible host pause"
+            )
+            _write_heartbeat('clock_jump', {
+                'planned_sleep_sec': round(slept_plan, 1),
+                'actual_sleep_sec': round(slept_actual, 1),
+                'extra_hours': round(jump_h, 3),
+                'loop_seconds': round(time.time() - loop_t0, 1),
+            })
 
 if __name__ == '__main__':
     main()
