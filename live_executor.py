@@ -77,6 +77,9 @@ def main():
     print("[*] Starting main loop (reload only when config/paper_trader mtime changes)...\n")
 
     heartbeat_path = os.path.join(repo, 'logs', 'executor_heartbeat.json')
+    # Carry last successful scan metrics into sleeping heartbeats (monitors
+    # otherwise only see sleep_remaining and lose equity/idle/gates).
+    _last_scan_hb = {}
 
     def _write_heartbeat(phase: str, extra=None):
         payload = {
@@ -101,11 +104,16 @@ def main():
         wake_at = time.time() + remaining
         while remaining > 0:
             step = min(chunk, remaining)
-            _write_heartbeat('sleeping', {
+            sleep_extra = {
                 'sleep_remaining_sec': round(remaining, 1),
                 'next_scan_eta_sec': round(max(0.0, wake_at - time.time()), 1),
                 'scan_interval': float(interval),
-            })
+            }
+            # Preserve last scan snapshot fields for external health checks.
+            for k, v in _last_scan_hb.items():
+                if k not in sleep_extra:
+                    sleep_extra[k] = v
+            _write_heartbeat('sleeping', sleep_extra)
             time.sleep(step)
             remaining = wake_at - time.time()
 
@@ -168,10 +176,16 @@ def main():
                     'max_adx', 'max_di', 'max_conf', 'ret_pct', 'quiet',
                     'fail_adx', 'fail_conf', 'fail_di',
                     'last_trade_iso', 'idle_hours_since_last_trade',
+                    'idle_alert', 'idle_alert_hours',
                     'gate_adx', 'gate_conf', 'gate_di',
                 ):
                     if k in snap:
                         hb_extra[k] = snap[k]
+                _last_scan_hb = {
+                    k: hb_extra[k] for k in hb_extra
+                    if k not in ('scan_seconds',)
+                }
+                _last_scan_hb['last_scan_seconds'] = hb_extra.get('scan_seconds')
                 _write_heartbeat('scan_done', hb_extra)
                 if dt > max(60.0, float(interval) * 0.8):
                     print(f"[!] Slow scan: {dt:.1f}s (interval={interval}s)")

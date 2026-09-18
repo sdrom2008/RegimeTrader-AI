@@ -117,8 +117,21 @@ class SymbolResult:
     end: Any = None
 
 
+def _ohlcv_csv_stem(symbol: str) -> str:
+    """Accept ETH or ETH/USDT (or ETH_USDT) → stem ETH_USDT for data/*.csv."""
+    s = str(symbol).strip().upper().replace("/", "_")
+    if s.endswith("_USDT_USDT"):
+        s = s[: -len("_USDT")]
+    if not s.endswith("_USDT"):
+        s = f"{s}_USDT"
+    return s
+
+
 def load_ohlcv(symbol: str, years: Optional[float]) -> pd.DataFrame:
-    path = os.path.join(DATA_DIR, f"{symbol}_USDT_1h_6y.csv")
+    stem = _ohlcv_csv_stem(symbol)
+    path = os.path.join(DATA_DIR, f"{stem}_1h_6y.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"OHLCV missing for {symbol!r} → {path}")
     df = pd.read_csv(path, index_col="timestamp", parse_dates=True).sort_index()
     if years is not None and years > 0:
         cutoff = df.index.max() - pd.Timedelta(days=int(365.25 * years))

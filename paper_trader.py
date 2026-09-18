@@ -65,6 +65,8 @@ CLASS_NAMES = {0: 'Down', 1: 'Osc/HOLD', 2: 'Up'}
 # Last scan metrics for executor heartbeat / monitors
 LAST_SCAN_SNAPSHOT = {}
 _SCAN_SEQ = 0
+_LAST_IDLE_FINGERPRINT = None  # suppress duplicate idle INFO lines
+IDLE_ALERT_HOURS = float(os.environ.get('IDLE_ALERT_HOURS', '120'))  # ~5d
 
 # 宏风险监控（全局单例，避免重复抓取）
 RISK_CHECK_INTERVAL = 600  # 秒，10分钟
@@ -212,7 +214,7 @@ def make_binance_spot_exchange():
     return exchange
 
 def scan_and_trade_v2():
-    global _SCAN_SEQ, LAST_SCAN_SNAPSHOT
+    global _SCAN_SEQ, LAST_SCAN_SNAPSHOT, _LAST_IDLE_FINGERPRINT
     _SCAN_SEQ += 1
     force_verbose = (_SCAN_SEQ % 12 == 1)
 
@@ -761,6 +763,9 @@ def scan_and_trade_v2():
         last_trade_iso = None
         idle_hours = None
 
+    idle_alert = bool(
+        idle_hours is not None and float(idle_hours) >= float(IDLE_ALERT_HOURS)
+    )
     LAST_SCAN_SNAPSHOT = {
         'ts': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
         'equity': round(float(total_equity), 2),
@@ -782,16 +787,28 @@ def scan_and_trade_v2():
         'idle_hours_since_last_trade': (
             round(float(idle_hours), 2) if idle_hours is not None else None
         ),
+        'idle_alert': idle_alert,
+        'idle_alert_hours': float(IDLE_ALERT_HOURS),
         # Echo live thresholds so heartbeat proves hot-reload took effect
         'gate_adx': float(ADX_STRONG_THRESHOLD),
         'gate_conf': float(CONFIDENCE_THRESHOLD),
         'gate_di': float(MIN_DI_DIFF),
     }
     if quiet and not force_verbose:
+        # Fingerprint: gate fails + coarse near-miss (0.5 ADX / 0.5 DI / 0.01 conf)
+        fp = (
+            int(gate_stats.get('fail_adx') or 0),
+            int(gate_stats.get('fail_conf') or 0),
+            int(gate_stats.get('fail_di') or 0),
+            round(float(gate_stats.get('max_adx') or 0) * 2) / 2.0,
+            round(float(gate_stats.get('max_di') or 0) * 2) / 2.0,
+            round(float(gate_stats.get('max_conf') or 0), 2),
+            bool(idle_alert),
+        )
         idle_s = (
             f" idle_h={idle_hours:.1f}" if idle_hours is not None else ""
         )
-        logger.info(
+        msg = (
             "Scan idle equity=${eq:.2f} ({ret:+.1f}%) "
             "fail_adx={fail_adx} fail_conf={fail_conf} fail_di={fail_di} "
             "near max_adx={max_adx:.1f} max_di={max_di:.1f} max_conf={max_conf:.3f}"
@@ -799,7 +816,20 @@ def scan_and_trade_v2():
                 eq=total_equity, ret=ret_pct, idle=idle_s, **gate_stats
             )
         )
+        if idle_alert and (_LAST_IDLE_FINGERPRINT is None or not _LAST_IDLE_FINGERPRINT[-1]):
+            logger.warning(
+                "IDLE_ALERT: no closes for %.1fh (threshold %.0fh) — "
+                "still scanning; likely ADX/|DI| regime, not a hung executor. "
+                "%s",
+                float(idle_hours), float(IDLE_ALERT_HOURS), msg,
+            )
+        if fp != _LAST_IDLE_FINGERPRINT:
+            logger.info(msg)
+            _LAST_IDLE_FINGERPRINT = fp
+        else:
+            logger.debug(msg + " (deduped)")
     else:
+        _LAST_IDLE_FINGERPRINT = None  # reset so next quiet streak logs once
         logger.info(f"\n--- Summary ---")
         logger.info(f"Equity: ${total_equity:.2f} ({ret_pct:+.1f}%)")
         logger.info(f"Closed positions: {len(closed_positions)}")
