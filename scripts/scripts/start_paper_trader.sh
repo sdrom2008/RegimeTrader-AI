@@ -1,11 +1,5 @@
 #!/bin/bash
-# 启动模拟盘常驻进程
+# 启动 DRY_RUN live_executor 常驻进程（正确入口，非单次 paper_trader.py）
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
-mkdir -p logs
-PYTHON="${ROOT}/.venv/bin/python"
-[ -x "$PYTHON" ] || PYTHON="${ROOT}/venv/bin/python"
-[ -x "$PYTHON" ] || PYTHON="python3"
-nohup "$PYTHON" paper_trader.py > logs/paper_trader_manual.log 2>&1 &
-echo $! > /tmp/paper_trader.pid
-echo "✅ Paper trader started (PID $(cat /tmp/paper_trader.pid))"
+exec "$ROOT/start.sh" dry bg

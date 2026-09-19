@@ -9,6 +9,8 @@ import sys
 import time
 import datetime
 import concurrent.futures
+import atexit
+import signal
 
 try:
     from dotenv import load_dotenv
@@ -44,6 +46,7 @@ def main():
     - 处理异常并记录日志
     - 仅当 config/paper_trader 文件 mtime 变化时 reload（避免每轮重载 170MB+ 模型）
     - scan hard-timeout + chunked sleep heartbeats（防 16h 级假死）
+    - SIGTERM/SIGINT/atexit → heartbeat phase=shutdown（便于 monitor_v2 区分干净退出 vs 死进程）
     """
     print(f"\n{'='*60}")
     print(f"🚀 RegimeTrader AI - Live Executor (v2)")
@@ -80,6 +83,45 @@ def main():
     # Carry last successful scan metrics into sleeping heartbeats (monitors
     # otherwise only see sleep_remaining and lose equity/idle/gates).
     _last_scan_hb = {}
+    _shutting_down = {'done': False}
+
+    def _write_shutdown(reason: str):
+        if _shutting_down['done']:
+            return
+        _shutting_down['done'] = True
+        extra = {'reason': str(reason)[:120]}
+        for k, v in _last_scan_hb.items():
+            if k not in extra:
+                extra[k] = v
+        # Inline write (avoid depending on nested def order before _write_heartbeat exists)
+        payload = {
+            'ts': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+            'phase': 'shutdown',
+            'pid': os.getpid(),
+        }
+        payload.update(extra)
+        try:
+            os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
+            with open(heartbeat_path, 'w', encoding='utf-8') as hf:
+                import json as _json
+                _json.dump(payload, hf)
+            print(f"[*] Heartbeat phase=shutdown ({reason})")
+        except Exception as he:
+            print(f"[!] shutdown heartbeat failed: {he}")
+
+    def _on_signal(signum, _frame):
+        name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        _write_shutdown(f'signal:{name}')
+        # Re-raise default so process exits (loop may be in sleep)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    atexit.register(lambda: _write_shutdown('atexit'))
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _on_signal)
+        except Exception:
+            pass
 
     def _write_heartbeat(phase: str, extra=None):
         payload = {

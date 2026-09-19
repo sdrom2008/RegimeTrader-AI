@@ -1,70 +1,182 @@
-"""监控 v2 干跑日志，提取关键指标"""
-import os, re, glob, datetime
+#!/usr/bin/env python3
+"""Paper executor health via logs/executor_heartbeat.json.
 
-LOG_DIR = '/tmp'
-LOG_PATTERN = 'v2_dryrun_60_*.log'
+Usage:
+  python monitor_v2.py              # human summary, exit 0/1/2
+  python monitor_v2.py --json       # machine-readable
+  python monitor_v2.py --write      # also write logs/executor_health.json
 
-def find_latest_log():
-    logs = sorted(glob.glob(os.path.join(LOG_DIR, LOG_PATTERN)), key=os.path.getmtime, reverse=True)
-    return logs[0] if logs else None
+Exit codes: 0=ok, 1=stale/dead, 2=missing heartbeat.
+"""
+from __future__ import annotations
 
-def parse_summary(log_file):
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+HB_PATH = os.path.join(REPO, "logs", "executor_heartbeat.json")
+OUT_PATH = os.path.join(REPO, "logs", "executor_health.json")
+# Fresh if heartbeat younger than this (scan interval 300s + sleep chunks + slack).
+DEFAULT_STALE_SEC = float(os.environ.get("EXECUTOR_STALE_SEC", "900"))  # 15 min
+
+
+def _parse_ts(s: str) -> dt.datetime:
+    s = str(s).replace("Z", "+00:00")
+    if s.endswith("+00:00") or (len(s) > 6 and (s[-6] in "+-" or s.endswith("Z"))):
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    naive = dt.datetime.fromisoformat(s)
+    return naive.replace(tzinfo=dt.timezone.utc)
+
+
+def _pid_alive(pid) -> bool:
+    if not pid:
+        return False
     try:
-        with open(log_file, 'r') as f:
-            lines = f.readlines()
-    except:
-        return None
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
 
-    # 寻找最新 Summary 块
-    summary_start = None
-    for i in range(len(lines)-1, -1, -1):
-        if '--- Summary ---' in lines[i]:
-            summary_start = i
-            break
-    if summary_start is None:
-        return None
 
-    summary_lines = lines[summary_start:summary_start+10]
+def check(stale_sec: float = DEFAULT_STALE_SEC) -> dict:
+    now = dt.datetime.now(dt.timezone.utc)
     result = {
-        'timestamp': lines[summary_start-1].strip() if summary_start>0 else 'unknown',
-        'equity': None,
-        'closed': None,
-        'new_entries': None,
-        'pnls': []
+        "ts": now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "heartbeat_path": HB_PATH,
+        "status": "missing",
+        "stale_sec_threshold": stale_sec,
+        "age_sec": None,
+        "pid": None,
+        "pid_alive": False,
+        "phase": None,
+        "equity": None,
+        "idle_hours_since_last_trade": None,
+        "idle_alert": None,
+        "fail_adx": None,
+        "fail_conf": None,
+        "fail_di": None,
+        "max_adx": None,
+        "max_di": None,
+        "max_conf": None,
+        "last_hb_ts": None,
+        "message": "",
     }
-    for line in summary_lines:
-        if 'Equity:' in line:
-            m = re.search(r'Equity: \$([0-9,]+\.?[0-9]*)', line)
-            if m:
-                result['equity'] = float(m.group(1).replace(',',''))
-        if 'Closed:' in line:
-            m = re.search(r'Closed: (\d+)', line)
-            if m:
-                result['closed'] = int(m.group(1))
-        if 'New entries:' in line:
-            m = re.search(r'New entries: (\d+)', line)
-            if m:
-                result['new_entries'] = int(m.group(1))
-        if line.strip().startswith('  ') and ':' in line and '$' in line:
-            # 例: "  BTC/USDT: $+12.34"
-            result['pnls'].append(line.strip())
+    if not os.path.exists(HB_PATH):
+        result["message"] = "heartbeat file missing — executor never started or logs wiped"
+        result["status"] = "missing"
+        return result
+
+    try:
+        with open(HB_PATH, "r", encoding="utf-8") as f:
+            hb = json.load(f)
+    except Exception as e:
+        result["status"] = "missing"
+        result["message"] = f"heartbeat unreadable: {e}"
+        return result
+
+    result["last_hb_ts"] = hb.get("ts")
+    result["pid"] = hb.get("pid")
+    result["phase"] = hb.get("phase")
+    result["pid_alive"] = _pid_alive(hb.get("pid"))
+    for k in (
+        "equity",
+        "idle_hours_since_last_trade",
+        "idle_alert",
+        "fail_adx",
+        "fail_conf",
+        "fail_di",
+        "max_adx",
+        "max_di",
+        "max_conf",
+        "ret_pct",
+        "positions",
+        "actionable",
+        "gate_adx",
+        "gate_conf",
+        "gate_di",
+    ):
+        if k in hb:
+            result[k] = hb[k]
+
+    try:
+        hb_ts = _parse_ts(hb["ts"])
+        age = (now - hb_ts).total_seconds()
+        result["age_sec"] = round(age, 1)
+    except Exception as e:
+        result["status"] = "missing"
+        result["message"] = f"bad heartbeat ts: {e}"
+        return result
+
+    phase = str(hb.get("phase") or "")
+    if phase in ("stopped", "shutdown", "signal_exit"):
+        result["status"] = "stopped"
+        result["message"] = (
+            f"executor cleanly stopped (phase={phase}, age={age/3600:.1f}h, "
+            f"pid_alive={result['pid_alive']})"
+        )
+        return result
+
+    if age > stale_sec or not result["pid_alive"]:
+        result["status"] = "dead"
+        why = []
+        if age > stale_sec:
+            why.append(f"heartbeat stale {age/3600:.1f}h (>{stale_sec:.0f}s)")
+        if not result["pid_alive"]:
+            why.append(f"pid {hb.get('pid')} not alive")
+        result["message"] = "executor DEAD: " + "; ".join(why)
+        return result
+
+    result["status"] = "ok"
+    result["message"] = (
+        f"ok phase={phase} age={age:.0f}s equity={hb.get('equity')} "
+        f"idle_h={hb.get('idle_hours_since_last_trade')} "
+        f"fail_adx={hb.get('fail_adx')}"
+    )
     return result
 
-if __name__ == '__main__':
-    latest = find_latest_log()
-    if not latest:
-        print("No log found")
-        exit(1)
-    print(f"Latest log: {os.path.basename(latest)}")
-    summary = parse_summary(latest)
-    if not summary:
-        print("No summary parsed yet")
-        exit(0)
-    print(f"Time: {summary['timestamp']}")
-    print(f"Equity: ${summary['equity']:.2f}" if summary['equity'] else "Equity: N/A")
-    print(f"Closed trades: {summary['closed']}")
-    print(f"New entries: {summary['new_entries']}")
-    if summary['pnls']:
-        print("\nRecent PnLs:")
-        for p in summary['pnls'][-5:]:
-            print(p)
+
+def main():
+    ap = argparse.ArgumentParser(description="RegimeTrader executor heartbeat monitor")
+    ap.add_argument("--json", action="store_true", help="print JSON only")
+    ap.add_argument("--write", action="store_true", help="write logs/executor_health.json")
+    ap.add_argument(
+        "--stale-sec",
+        type=float,
+        default=DEFAULT_STALE_SEC,
+        help="stale threshold seconds (default 900)",
+    )
+    args = ap.parse_args()
+    result = check(stale_sec=args.stale_sec)
+
+    if args.write:
+        os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+        with open(OUT_PATH, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"status={result['status']}")
+        print(result["message"])
+        if result.get("last_hb_ts"):
+            print(
+                f"last_hb={result['last_hb_ts']} age_sec={result['age_sec']} "
+                f"pid={result['pid']} alive={result['pid_alive']} phase={result['phase']}"
+            )
+        if result.get("equity") is not None:
+            print(
+                f"equity={result.get('equity')} idle_h={result.get('idle_hours_since_last_trade')} "
+                f"fail_adx/conf/di={result.get('fail_adx')}/{result.get('fail_conf')}/{result.get('fail_di')} "
+                f"near max_adx/di/conf={result.get('max_adx')}/{result.get('max_di')}/{result.get('max_conf')}"
+            )
+
+    code = {"ok": 0, "stopped": 1, "dead": 1, "missing": 2}.get(result["status"], 2)
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
