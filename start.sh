@@ -7,6 +7,7 @@
 #   ./start.sh live         # live, foreground (interactive confirm)
 #   ./start.sh status       # heartbeat health via monitor_v2.py
 #   ./start.sh stop         # stop DRY_RUN live_executor by pidfile / pgrep
+#   ./start.sh watchdog     # restart dry bg if dead/missing/zombie HB
 
 set -e
 
@@ -100,12 +101,17 @@ elif [ "$MODE" = "live" ]; then
         echo "取消启动"
         exit 1
     fi
+elif [ "$MODE" = "watchdog" ]; then
+    # Cron-friendly: restart DRY_RUN if heartbeat missing/dead or zombie (>2h stale).
+    # Does NOT touch live gates. Safe to run every 10–15 min.
+    exec "$PYTHON" monitor_v2.py --write --restart-if-dead
 else
-    echo "用法: $0 [dry|live|status|stop] [bg]"
-    echo "  dry     - 模拟盘前台（默认）"
-    echo "  dry bg  - 模拟盘后台（推荐常驻）"
-    echo "  live    - 实盘前台（需确认）"
-    echo "  status  - 读 heartbeat / 写 executor_health.json"
-    echo "  stop    - 停止 live_executor"
+    echo "用法: $0 [dry|live|status|stop|watchdog] [bg]"
+    echo "  dry      - 模拟盘前台（默认）"
+    echo "  dry bg   - 模拟盘后台（推荐常驻）"
+    echo "  live     - 实盘前台（需确认）"
+    echo "  status   - 读 heartbeat / 写 executor_health.json"
+    echo "  stop     - 停止 live_executor"
+    echo "  watchdog - 若 dead/missing/僵尸则 stop + dry bg（建议 cron）"
     exit 1
 fi

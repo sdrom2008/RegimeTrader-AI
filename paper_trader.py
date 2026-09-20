@@ -152,6 +152,8 @@ def fetch_with_retry(fn, *args, retries=3, base_delay=0.6, label='fetch', warn_s
         try:
             out = fn(*args, **kwargs)
             dt = time.time() - t0
+            if out is None or out == [] or out == {}:
+                raise ValueError(f"{label} empty response")
             if dt >= float(warn_sec):
                 logger.warning(f"{label} slow: {dt:.1f}s (attempt {attempt+1}/{retries})")
             return out
@@ -274,6 +276,9 @@ def scan_and_trade_v2():
             exit_reason = None
 
             if pos['type'] == 'BUY':
+                if price is None or float(price) <= 0:
+                    raise ValueError(f"bad ticker last={price}")
+                price = float(price)
                 unreal = (price - entry) * amount
                 unrealized_total += unreal
                 one_r = atr * STOP_LOSS_ATR_MULT
@@ -286,12 +291,12 @@ def scan_and_trade_v2():
                     sl = pos['sl']
                 elif price > pos.get('highest_seen', entry):
                     pos['highest_seen'] = price
-                # Prefer TP if hit; else trailing/fixed SL (same as before)
-                if tp is not None and price >= tp:
-                    exit_price = tp
+                # Prefer TP if hit (incl. gap through TP+SL same tick); else SL/TRAIL
+                if tp is not None and price >= float(tp):
+                    exit_price = float(tp)
                     exit_reason = 'TP'
-                elif price <= sl:
-                    exit_price = sl
+                elif price <= float(sl):
+                    exit_price = float(sl)
                     exit_reason = 'SL/TRAIL'
                 else:
                     try:
@@ -327,6 +332,9 @@ def scan_and_trade_v2():
                         f"PnL:${pnl:.2f}{_rm}{_hh} tp={tp} sl={sl}"
                     )
             elif pos['type'] == 'SELL':
+                if price is None or float(price) <= 0:
+                    raise ValueError(f"bad ticker last={price}")
+                price = float(price)
                 unreal = (entry - price) * amount
                 unrealized_total += unreal
                 one_r = atr * STOP_LOSS_ATR_MULT
@@ -338,11 +346,12 @@ def scan_and_trade_v2():
                     sl = pos['sl']
                 elif pos.get('lowest_seen') is None or price < pos.get('lowest_seen', entry):
                     pos['lowest_seen'] = price
-                if tp is not None and price <= tp:
-                    exit_price = tp
+                # Prefer TP on gap-through; else SL/TRAIL
+                if tp is not None and price <= float(tp):
+                    exit_price = float(tp)
                     exit_reason = 'TP'
-                elif price >= sl:
-                    exit_price = sl
+                elif price >= float(sl):
+                    exit_price = float(sl)
                     exit_reason = 'SL/TRAIL'
                 else:
                     try:
@@ -417,6 +426,18 @@ def scan_and_trade_v2():
         state['trade_history'].append(hist)
         # Cooldown: block re-entry for COOLDOWN_HOURS after close
         cooldowns[sym] = exit_iso
+
+    # Persist closes immediately so a hung later OHLCV/scan cannot lose TP/SL fills.
+    if closed_positions:
+        state['balance'] = balance
+        state['positions'] = positions
+        state['cooldowns'] = cooldowns
+        state['signal_bars'] = signal_bars
+        try:
+            save_state(state)
+            logger.info(f"Early state save after {len(closed_positions)} close(s)")
+        except Exception as e:
+            logger.warning(f"Early state save failed: {e}")
 
     # 2) 计算总权益
     margin_used = sum(p['margin'] for p in positions.values())

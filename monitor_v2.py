@@ -138,6 +138,25 @@ def check(stale_sec: float = DEFAULT_STALE_SEC) -> dict:
     return result
 
 
+def _restart_dry_bg(reason: str) -> int:
+    """Stop any live_executor and start DRY_RUN via start.sh (low-risk recovery)."""
+    start_sh = os.path.join(REPO, "start.sh")
+    if not os.path.isfile(start_sh):
+        print(f"restart aborted: missing {start_sh}", file=sys.stderr)
+        return 2
+    import subprocess
+
+    print(f"watchdog restart: {reason}")
+    # stop (ignore non-zero)
+    subprocess.run(["bash", start_sh, "stop"], cwd=REPO, check=False)
+    # brief wait so port/pidfile clears
+    import time as _time
+
+    _time.sleep(1.5)
+    r = subprocess.run(["bash", start_sh, "dry", "bg"], cwd=REPO, check=False)
+    return 0 if r.returncode == 0 else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description="RegimeTrader executor heartbeat monitor")
     ap.add_argument("--json", action="store_true", help="print JSON only")
@@ -147,6 +166,17 @@ def main():
         type=float,
         default=DEFAULT_STALE_SEC,
         help="stale threshold seconds (default 900)",
+    )
+    ap.add_argument(
+        "--restart-if-dead",
+        action="store_true",
+        help="if status=dead/missing, stop + ./start.sh dry bg (for cron/watchdog)",
+    )
+    ap.add_argument(
+        "--force-restart-age-sec",
+        type=float,
+        default=float(os.environ.get("EXECUTOR_FORCE_RESTART_SEC", "7200")),
+        help="when pid alive but HB stale this long, still restart (default 2h)",
     )
     args = ap.parse_args()
     result = check(stale_sec=args.stale_sec)
@@ -175,6 +205,38 @@ def main():
             )
 
     code = {"ok": 0, "stopped": 1, "dead": 1, "missing": 2}.get(result["status"], 2)
+
+    if args.restart_if_dead:
+        age = result.get("age_sec")
+        status = result.get("status")
+        pid_alive = bool(result.get("pid_alive"))
+        # Restart when: missing, or dead with pid gone, or zombie (alive+stale >= force age).
+        # Skip clean stopped (manual stop / shutdown phase) unless missing pid forever.
+        do_restart = False
+        reason = ""
+        if status == "missing":
+            do_restart = True
+            reason = "heartbeat missing"
+        elif status == "dead":
+            if not pid_alive:
+                do_restart = True
+                reason = result.get("message") or "dead (pid gone)"
+            elif age is not None and float(age) >= float(args.force_restart_age_sec):
+                do_restart = True
+                reason = (
+                    f"zombie: pid alive but HB stale {float(age)/3600:.1f}h "
+                    f"(>={args.force_restart_age_sec:.0f}s)"
+                )
+            else:
+                # alive+stale but under force age — likely host pause; wait for wake or force age
+                print(
+                    f"watchdog defer: pid alive, HB stale {float(age or 0)/3600:.1f}h "
+                    f"< force {args.force_restart_age_sec:.0f}s (possible host pause)"
+                )
+        if do_restart:
+            rc = _restart_dry_bg(reason)
+            sys.exit(rc)
+
     sys.exit(code)
 
 

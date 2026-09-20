@@ -84,6 +84,8 @@ def main():
     # otherwise only see sleep_remaining and lose equity/idle/gates).
     _last_scan_hb = {}
     _shutting_down = {'done': False}
+    # After host pause / wall-clock jump, skip one full sleep to catch up.
+    _catch_up_scans = {'n': 0}
 
     def _write_shutdown(reason: str):
         if _shutting_down['done']:
@@ -238,7 +240,12 @@ def main():
             _write_heartbeat('error', {'error': str(e)[:200]})
 
         # Wall-clock jump detection (VM pause / long hang waking into sleep)
-        slept_plan = float(interval)
+        if _catch_up_scans['n'] > 0:
+            _catch_up_scans['n'] -= 1
+            slept_plan = min(15.0, float(interval))
+            print(f"[*] Catch-up sleep {slept_plan:.0f}s (remaining={_catch_up_scans['n']})")
+        else:
+            slept_plan = float(interval)
         pre_sleep = time.time()
         _sleep_chunked(slept_plan)
         slept_actual = time.time() - pre_sleep
@@ -254,6 +261,9 @@ def main():
                 'extra_hours': round(jump_h, 3),
                 'loop_seconds': round(time.time() - loop_t0, 1),
             })
+            # Catch up: run up to 2 back-to-back scans with short sleeps.
+            _catch_up_scans['n'] = max(_catch_up_scans['n'], 2)
+            print(f"[*] Host-pause recovery: {_catch_up_scans['n']} catch-up scan(s) queued")
 
 if __name__ == '__main__':
     main()
