@@ -8,6 +8,7 @@
 #   ./start.sh status       # heartbeat health via monitor_v2.py
 #   ./start.sh stop         # stop DRY_RUN live_executor by pidfile / pgrep
 #   ./start.sh watchdog     # restart dry bg if dead/missing/zombie HB
+#   ./start.sh install-cron # write cron example + try crontab install (*/15)
 
 set -e
 
@@ -26,9 +27,10 @@ else
     PYTHON="python3"
 fi
 
-mkdir -p logs
+mkdir -p logs scripts
 PIDFILE="$ROOT/logs/executor.pid"
 LOGFILE="$ROOT/logs/paper_sim_keep.log"
+CRON_EXAMPLE="$ROOT/scripts/watchdog.cron.example"
 
 _already_running() {
     # Prefer pidfile; fall back to pgrep on live_executor.py
@@ -47,6 +49,7 @@ _already_running() {
     return 1
 }
 
+# --- ops commands MUST run even when executor is already up ---
 if [ "$MODE" = "status" ]; then
     "$PYTHON" monitor_v2.py --write
     exit $?
@@ -72,10 +75,40 @@ if [ "$MODE" = "stop" ]; then
     exit 0
 fi
 
-# Refuse duplicate start
+if [ "$MODE" = "watchdog" ]; then
+    # Cron-friendly: restart DRY_RUN if heartbeat missing/dead or zombie (>2h stale).
+    # Does NOT touch live gates. Safe to run every 10–15 min.
+    # CRITICAL: must NOT go through the duplicate-start guard below.
+    exec "$PYTHON" monitor_v2.py --write --restart-if-dead
+fi
+
+if [ "$MODE" = "install-cron" ]; then
+    # Write portable crontab snippet; install if `crontab` exists.
+    cat > "$CRON_EXAMPLE" <<EOF
+# RegimeTrader-AI paper DRY_RUN watchdog — every 15 minutes
+*/15 * * * * cd $ROOT && ./start.sh watchdog >>$ROOT/logs/watchdog_cron.log 2>&1
+EOF
+    echo "✅ Wrote $CRON_EXAMPLE"
+    if command -v crontab >/dev/null 2>&1; then
+        tmp="$(mktemp)"
+        crontab -l 2>/dev/null | grep -v 'RegimeTrader-AI paper DRY_RUN watchdog' | grep -v "$ROOT/start.sh watchdog" >"$tmp" || true
+        cat "$CRON_EXAMPLE" >>"$tmp"
+        crontab "$tmp"
+        rm -f "$tmp"
+        echo "✅ Installed into user crontab (*/15 ./start.sh watchdog)"
+        crontab -l | tail -n 5
+    else
+        echo "⚠️ crontab binary not found on this host — copy $CRON_EXAMPLE to the host that runs the box/VM."
+        echo "   Example line:"
+        cat "$CRON_EXAMPLE"
+    fi
+    exit 0
+fi
+
+# Refuse duplicate start (dry/live only)
 if existing="$(_already_running)"; then
     if [ -n "$existing" ] && kill -0 "$existing" 2>/dev/null; then
-        echo "⚠️ live_executor already running (PID $existing). Use: ./start.sh status|stop"
+        echo "⚠️ live_executor already running (PID $existing). Use: ./start.sh status|stop|watchdog"
         exit 1
     fi
 fi
@@ -101,17 +134,14 @@ elif [ "$MODE" = "live" ]; then
         echo "取消启动"
         exit 1
     fi
-elif [ "$MODE" = "watchdog" ]; then
-    # Cron-friendly: restart DRY_RUN if heartbeat missing/dead or zombie (>2h stale).
-    # Does NOT touch live gates. Safe to run every 10–15 min.
-    exec "$PYTHON" monitor_v2.py --write --restart-if-dead
 else
-    echo "用法: $0 [dry|live|status|stop|watchdog] [bg]"
-    echo "  dry      - 模拟盘前台（默认）"
-    echo "  dry bg   - 模拟盘后台（推荐常驻）"
-    echo "  live     - 实盘前台（需确认）"
-    echo "  status   - 读 heartbeat / 写 executor_health.json"
-    echo "  stop     - 停止 live_executor"
-    echo "  watchdog - 若 dead/missing/僵尸则 stop + dry bg（建议 cron）"
+    echo "用法: $0 [dry|live|status|stop|watchdog|install-cron] [bg]"
+    echo "  dry          - 模拟盘前台（默认）"
+    echo "  dry bg       - 模拟盘后台（推荐常驻）"
+    echo "  live         - 实盘前台（需确认）"
+    echo "  status       - 读 heartbeat / 写 executor_health.json"
+    echo "  stop         - 停止 live_executor"
+    echo "  watchdog     - 若 dead/missing/僵尸则 stop + dry bg（建议 cron）"
+    echo "  install-cron - 写入 scripts/watchdog.cron.example；有 crontab 则安装 */15"
     exit 1
 fi

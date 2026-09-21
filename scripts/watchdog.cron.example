@@ -1,0 +1,2 @@
+# RegimeTrader-AI paper DRY_RUN watchdog — every 15 minutes
+*/15 * * * * cd /workspace/RegimeTrader-AI && ./start.sh watchdog >>/workspace/RegimeTrader-AI/logs/watchdog_cron.log 2>&1

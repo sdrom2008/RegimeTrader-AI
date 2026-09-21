@@ -66,7 +66,10 @@ CLASS_NAMES = {0: 'Down', 1: 'Osc/HOLD', 2: 'Up'}
 LAST_SCAN_SNAPSHOT = {}
 _SCAN_SEQ = 0
 _LAST_IDLE_FINGERPRINT = None  # suppress duplicate idle INFO lines
+_LAST_IDLE_ALERT_TS = None  # wall-clock rate-limit for IDLE_ALERT WARNING
 IDLE_ALERT_HOURS = float(os.environ.get('IDLE_ALERT_HOURS', '120'))  # ~5d
+# Hourly verbose scans reset fingerprint → without this, IDLE_ALERT repeats every hour.
+IDLE_ALERT_REPEAT_HOURS = float(os.environ.get('IDLE_ALERT_REPEAT_HOURS', '6'))
 
 # 宏风险监控（全局单例，避免重复抓取）
 RISK_CHECK_INTERVAL = 600  # 秒，10分钟
@@ -837,13 +840,24 @@ def scan_and_trade_v2():
                 eq=total_equity, ret=ret_pct, idle=idle_s, **gate_stats
             )
         )
-        if idle_alert and (_LAST_IDLE_FINGERPRINT is None or not _LAST_IDLE_FINGERPRINT[-1]):
-            logger.warning(
-                "IDLE_ALERT: no closes for %.1fh (threshold %.0fh) — "
-                "still scanning; likely ADX/|DI| regime, not a hung executor. "
-                "%s",
-                float(idle_hours), float(IDLE_ALERT_HOURS), msg,
+        if idle_alert:
+            global _LAST_IDLE_ALERT_TS
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            due = (
+                _LAST_IDLE_ALERT_TS is None
+                or (now_utc - _LAST_IDLE_ALERT_TS).total_seconds()
+                >= float(IDLE_ALERT_REPEAT_HOURS) * 3600.0
             )
+            # Also fire once on transition into alert (fingerprint was not alerting).
+            transition = _LAST_IDLE_FINGERPRINT is None or not _LAST_IDLE_FINGERPRINT[-1]
+            if due or transition:
+                logger.warning(
+                    "IDLE_ALERT: no closes for %.1fh (threshold %.0fh) — "
+                    "still scanning; likely ADX/|DI| regime, not a hung executor. "
+                    "%s",
+                    float(idle_hours), float(IDLE_ALERT_HOURS), msg,
+                )
+                _LAST_IDLE_ALERT_TS = now_utc
         if fp != _LAST_IDLE_FINGERPRINT:
             logger.info(msg)
             _LAST_IDLE_FINGERPRINT = fp

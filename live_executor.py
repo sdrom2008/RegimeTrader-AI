@@ -125,6 +125,8 @@ def main():
         except Exception:
             pass
 
+    health_path = os.path.join(repo, 'logs', 'executor_health.json')
+
     def _write_heartbeat(phase: str, extra=None):
         payload = {
             'ts': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
@@ -138,6 +140,38 @@ def main():
             with open(heartbeat_path, 'w', encoding='utf-8') as hf:
                 import json as _json
                 _json.dump(payload, hf)
+            # Self-mirror a fresh health snapshot so dashboards stay current
+            # even when external `./start.sh status`/cron is not installed.
+            # External monitor_v2 remains source of truth for dead/stale detection.
+            try:
+                import json as _json
+                health = {
+                    'ts': payload['ts'],
+                    'heartbeat_path': heartbeat_path,
+                    'status': 'ok' if phase != 'shutdown' else 'stopped',
+                    'stale_sec_threshold': 900.0,
+                    'age_sec': 0.0,
+                    'pid': payload.get('pid'),
+                    'pid_alive': True,
+                    'phase': phase,
+                    'last_hb_ts': payload.get('ts'),
+                    'source': 'self_mirror',
+                    'message': f"self_mirror phase={phase} equity={payload.get('equity')}",
+                }
+                for k in (
+                    'equity', 'idle_hours_since_last_trade', 'idle_alert',
+                    'fail_adx', 'fail_conf', 'fail_di',
+                    'max_adx', 'max_di', 'max_conf',
+                    'ret_pct', 'positions', 'actionable',
+                    'gate_adx', 'gate_conf', 'gate_di',
+                ):
+                    if k in payload:
+                        health[k] = payload[k]
+                with open(health_path, 'w', encoding='utf-8') as hf:
+                    _json.dump(health, hf, indent=2, ensure_ascii=False)
+                    hf.write('\n')
+            except Exception as he2:
+                print(f"[!] health mirror failed: {he2}")
         except Exception as he:
             print(f"[!] heartbeat write failed: {he}")
 
