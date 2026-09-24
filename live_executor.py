@@ -164,6 +164,8 @@ def main():
                     'max_adx', 'max_di', 'max_conf',
                     'ret_pct', 'positions', 'actionable',
                     'gate_adx', 'gate_conf', 'gate_di',
+                    'last_host_pause_hours', 'last_host_pause_at',
+                    'extra_hours', 'planned_sleep_sec', 'actual_sleep_sec',
                 ):
                     if k in payload:
                         health[k] = payload[k]
@@ -285,19 +287,33 @@ def main():
         slept_actual = time.time() - pre_sleep
         if slept_actual > slept_plan * 2.5 + 30:
             jump_h = (slept_actual - slept_plan) / 3600.0
+            pause_at = datetime.datetime.now(datetime.timezone.utc).strftime(
+                '%Y-%m-%dT%H:%M:%S.%f'
+            )[:-3] + 'Z'
             print(
                 f"[!] Wall-clock jump during sleep: planned={slept_plan:.0f}s "
                 f"actual={slept_actual:.0f}s (~{jump_h:.2f}h extra) — possible host pause"
             )
-            _write_heartbeat('clock_jump', {
+            jump_extra = {
                 'planned_sleep_sec': round(slept_plan, 1),
                 'actual_sleep_sec': round(slept_actual, 1),
                 'extra_hours': round(jump_h, 3),
+                'last_host_pause_hours': round(jump_h, 3),
+                'last_host_pause_at': pause_at,
                 'loop_seconds': round(time.time() - loop_t0, 1),
-            })
+            }
+            # Keep last scan equity/gates visible across pause wake.
+            for k, v in _last_scan_hb.items():
+                if k not in jump_extra:
+                    jump_extra[k] = v
+            _write_heartbeat('clock_jump', jump_extra)
+            # Persist pause fields into subsequent sleeping heartbeats.
+            _last_scan_hb['last_host_pause_hours'] = jump_extra['last_host_pause_hours']
+            _last_scan_hb['last_host_pause_at'] = pause_at
             # Catch up: run up to 2 back-to-back scans with short sleeps.
             _catch_up_scans['n'] = max(_catch_up_scans['n'], 2)
-            print(f"[*] Host-pause recovery: {_catch_up_scans['n']} catch-up scan(s) queued")
+            print(f"[*] Host-pause recovery: {_catch_up_scans['n']} catch-up scan(s) queued "
+                  f"(gap≈{jump_h:.2f}h)")
 
 if __name__ == '__main__':
     main()

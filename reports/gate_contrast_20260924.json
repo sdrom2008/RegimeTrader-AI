@@ -1,0 +1,63 @@
+{
+  "generated_hkt": "2026-09-24",
+  "csv_last_bar": "2026-09-24 07:00:00",
+  "symbols": [
+    "ETH",
+    "BNB",
+    "SOL",
+    "XRP"
+  ],
+  "years": 1.0,
+  "capital_per_symbol": 10000,
+  "elapsed_sec": 3.4,
+  "variants": [
+    {
+      "variant": "live_35_080_di15",
+      "adx": 35,
+      "conf": 0.8,
+      "di": 15.0,
+      "gated_hits": 305,
+      "trades": 117,
+      "win_rate": 0.6239,
+      "agg_pf": 2.84,
+      "sum_pnl": 18441.99,
+      "final_equity_sum": 57710.12
+    },
+    {
+      "variant": "baseline_35_085_di15",
+      "adx": 35,
+      "conf": 0.85,
+      "di": 15.0,
+      "gated_hits": 160,
+      "trades": 74,
+      "win_rate": 0.6351,
+      "agg_pf": 2.95,
+      "sum_pnl": 11200.16,
+      "final_equity_sum": 50768.98
+    },
+    {
+      "variant": "adx30_080_di15",
+      "adx": 30,
+      "conf": 0.8,
+      "di": 15.0,
+      "gated_hits": 444,
+      "trades": 168,
+      "win_rate": 0.5774,
+      "agg_pf": 2.16,
+      "sum_pnl": 20306.31,
+      "final_equity_sum": 59197.99
+    },
+    {
+      "variant": "research_35_080_di12",
+      "adx": 35,
+      "conf": 0.8,
+      "di": 12.0,
+      "gated_hits": 442,
+      "trades": 147,
+      "win_rate": 0.5918,
+      "agg_pf": 2.37,
+      "sum_pnl": 19957.28,
+      "final_equity_sum": 59012.93
+    }
+  ]
+}

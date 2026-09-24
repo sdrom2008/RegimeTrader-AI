@@ -19,8 +19,54 @@ import sys
 REPO = os.path.dirname(os.path.abspath(__file__))
 HB_PATH = os.path.join(REPO, "logs", "executor_heartbeat.json")
 OUT_PATH = os.path.join(REPO, "logs", "executor_health.json")
+WATCHDOG_EVENTS = os.path.join(REPO, "logs", "watchdog_events.log")
 # Fresh if heartbeat younger than this (scan interval 300s + sleep chunks + slack).
 DEFAULT_STALE_SEC = float(os.environ.get("EXECUTOR_STALE_SEC", "900"))  # 15 min
+
+
+def _append_watchdog_event(kind: str, detail: str) -> None:
+    """Append one durable line for cron/defer/restart (survives missing crontab stdout)."""
+    try:
+        os.makedirs(os.path.dirname(WATCHDOG_EVENTS), exist_ok=True)
+        ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        line = f"{ts} kind={kind} {detail}\n"
+        with open(WATCHDOG_EVENTS, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        print(f"[!] watchdog_events write failed: {e}", file=sys.stderr)
+
+
+def _cron_observability() -> dict:
+    """Best-effort: is crontab binary present, and when was last watchdog event?"""
+    import shutil
+
+    info = {
+        "crontab_binary": bool(shutil.which("crontab")),
+        "watchdog_events_path": WATCHDOG_EVENTS,
+        "last_watchdog_event": None,
+        "hint": None,
+    }
+    try:
+        if os.path.isfile(WATCHDOG_EVENTS) and os.path.getsize(WATCHDOG_EVENTS) > 0:
+            with open(WATCHDOG_EVENTS, "rb") as f:
+                f.seek(max(0, os.path.getsize(WATCHDOG_EVENTS) - 4096))
+                chunk = f.read().decode("utf-8", errors="replace")
+            lines = [ln for ln in chunk.strip().splitlines() if ln.strip()]
+            if lines:
+                info["last_watchdog_event"] = lines[-1][:240]
+    except Exception:
+        pass
+    if not info["crontab_binary"]:
+        info["hint"] = (
+            "no crontab on this host — install on the VM/host that stays awake: "
+            "./start.sh install-cron (*/15 watchdog). Defer/restart also land in logs/watchdog_events.log"
+        )
+    elif not info["last_watchdog_event"]:
+        info["hint"] = (
+            "crontab present but no watchdog_events yet — confirm cron fires "
+            "./start.sh watchdog every 15m"
+        )
+    return info
 
 
 def _parse_ts(s: str) -> dt.datetime:
@@ -181,6 +227,26 @@ def main():
     args = ap.parse_args()
     result = check(stale_sec=args.stale_sec)
 
+    # Surface last host-pause fields from heartbeat when present
+    try:
+        if os.path.exists(HB_PATH):
+            with open(HB_PATH, "r", encoding="utf-8") as _hf:
+                _hb = json.load(_hf)
+            for _k in (
+                "last_host_pause_hours",
+                "last_host_pause_at",
+                "extra_hours",
+                "planned_sleep_sec",
+                "actual_sleep_sec",
+            ):
+                if _k in _hb and _k not in result:
+                    result[_k] = _hb[_k]
+    except Exception:
+        pass
+
+    cron_info = _cron_observability()
+    result["cron"] = cron_info
+
     if args.write:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
         with open(OUT_PATH, "w", encoding="utf-8") as f:
@@ -203,6 +269,14 @@ def main():
                 f"fail_adx/conf/di={result.get('fail_adx')}/{result.get('fail_conf')}/{result.get('fail_di')} "
                 f"near max_adx/di/conf={result.get('max_adx')}/{result.get('max_di')}/{result.get('max_conf')}"
             )
+        if result.get("last_host_pause_hours") is not None:
+            print(
+                f"last_host_pause={result.get('last_host_pause_hours')}h "
+                f"at={result.get('last_host_pause_at')}"
+            )
+        cron = result.get("cron") or {}
+        if cron.get("hint"):
+            print(f"cron_hint: {cron['hint']}")
 
     code = {"ok": 0, "stopped": 1, "dead": 1, "missing": 2}.get(result["status"], 2)
 
@@ -229,12 +303,34 @@ def main():
                 )
             else:
                 # alive+stale but under force age — likely host pause; wait for wake or force age
-                print(
+                remain = max(0.0, float(args.force_restart_age_sec) - float(age or 0))
+                msg = (
                     f"watchdog defer: pid alive, HB stale {float(age or 0)/3600:.1f}h "
-                    f"< force {args.force_restart_age_sec:.0f}s (possible host pause)"
+                    f"< force {args.force_restart_age_sec:.0f}s "
+                    f"(possible host pause; force_in={remain:.0f}s)"
                 )
+                print(msg)
+                _append_watchdog_event(
+                    "defer",
+                    f"pid={result.get('pid')} age_sec={age} force_sec={args.force_restart_age_sec} "
+                    f"force_in_sec={remain:.0f} status={status}",
+                )
+                # Keep health file honest while deferred (cron may be missing).
+                if args.write:
+                    result["status"] = "dead"
+                    result["watchdog_action"] = "defer"
+                    result["force_restart_in_sec"] = round(remain, 1)
+                    result["message"] = msg
+                    with open(OUT_PATH, "w", encoding="utf-8") as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
+                        f.write("\n")
         if do_restart:
+            _append_watchdog_event("restart", f"reason={reason} pid={result.get('pid')} age_sec={age}")
             rc = _restart_dry_bg(reason)
+            _append_watchdog_event(
+                "restart_done" if rc == 0 else "restart_fail",
+                f"rc={rc} reason={reason}",
+            )
             sys.exit(rc)
 
     sys.exit(code)

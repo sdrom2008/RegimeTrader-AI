@@ -9,6 +9,7 @@
 #   ./start.sh stop         # stop DRY_RUN live_executor by pidfile / pgrep
 #   ./start.sh watchdog     # restart dry bg if dead/missing/zombie HB
 #   ./start.sh install-cron # write cron example + try crontab install (*/15)
+#   ./start.sh cron-check   # report crontab presence + last watchdog_events line
 
 set -e
 
@@ -102,6 +103,35 @@ EOF
         echo "   Example line:"
         cat "$CRON_EXAMPLE"
     fi
+    # Ensure durable event log exists even before first watchdog fire
+    mkdir -p logs
+    touch logs/watchdog_events.log
+    exit 0
+fi
+
+if [ "$MODE" = "cron-check" ]; then
+    echo "=== RegimeTrader cron / watchdog observability ==="
+    if command -v crontab >/dev/null 2>&1; then
+        echo "crontab_binary=yes"
+        echo "--- crontab -l (watchdog lines) ---"
+        crontab -l 2>/dev/null | grep -E 'watchdog|RegimeTrader' || echo "(no RegimeTrader watchdog lines in crontab)"
+    else
+        echo "crontab_binary=NO — host/VM must install cron; box alone cannot auto-recover from long pauses"
+        echo "  fix: on the awake host run: cd $ROOT && ./start.sh install-cron"
+    fi
+    if [ -f "$CRON_EXAMPLE" ]; then
+        echo "--- $CRON_EXAMPLE ---"
+        cat "$CRON_EXAMPLE"
+    else
+        echo "missing $CRON_EXAMPLE (run ./start.sh install-cron to write it)"
+    fi
+    ev="$ROOT/logs/watchdog_events.log"
+    if [ -f "$ev" ] && [ -s "$ev" ]; then
+        echo "--- last 5 watchdog_events ---"
+        tail -n 5 "$ev"
+    else
+        echo "watchdog_events: empty/missing ($ev) — no defer/restart recorded yet"
+    fi
     exit 0
 fi
 
@@ -135,7 +165,7 @@ elif [ "$MODE" = "live" ]; then
         exit 1
     fi
 else
-    echo "用法: $0 [dry|live|status|stop|watchdog|install-cron] [bg]"
+    echo "用法: $0 [dry|live|status|stop|watchdog|install-cron|cron-check] [bg]"
     echo "  dry          - 模拟盘前台（默认）"
     echo "  dry bg       - 模拟盘后台（推荐常驻）"
     echo "  live         - 实盘前台（需确认）"
@@ -143,5 +173,6 @@ else
     echo "  stop         - 停止 live_executor"
     echo "  watchdog     - 若 dead/missing/僵尸则 stop + dry bg（建议 cron）"
     echo "  install-cron - 写入 scripts/watchdog.cron.example；有 crontab 则安装 */15"
+    echo "  cron-check   - 检查 crontab 是否存在 + 最近 watchdog_events"
     exit 1
 fi
