@@ -179,6 +179,16 @@ DRY_RUN=0 python live_executor.py
 - **绩效分析日志**：`logs/performance_analyzer.log`
 - **绩效报告文件**：`logs/performance/performance_YYYYMMDD_HHMM.md`
 
+### 拒因日报（gate rejects）
+
+从 `logs/signal_journal.jsonl` 按日汇总开仓门禁拒因（只读，**不改** live ADX/conf/|DI| 门槛）：
+
+```bash
+python3 scripts/export_gate_rejects_daily.py
+```
+
+输出：`reports/gate_rejects_daily.csv`（按日幂等覆盖；口径为白名单 `closed_1h_bar×symbol` 去重，有序拒因 ADX→conf→|DI|）。
+
 ---
 
 ## 🔧 常见问题
