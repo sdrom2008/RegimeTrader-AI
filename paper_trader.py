@@ -218,6 +218,128 @@ def make_binance_spot_exchange():
     exchange.urls['api']['v1'] = f'{_pub}/api/v1'
     return exchange
 
+# ---------------------------------------------------------------------------
+# Exchange reuse + markets cache (traffic plumbing only; no strategy impact).
+# Before: a fresh ccxt instance per scan -> implicit load_markets() every 5 min
+# (~17.8MB raw / ~370KB gzip exchangeInfo). Now: one instance reused across
+# scans, markets refreshed at most every MARKETS_TTL_SEC, persisted to disk,
+# and on refresh failure we keep the last good markets.
+# ---------------------------------------------------------------------------
+MARKETS_TTL_SEC = float(os.environ.get('MARKETS_TTL_SEC', str(12 * 3600)))
+MARKETS_CACHE_FILE = os.environ.get('MARKETS_CACHE_FILE', 'logs/markets_cache_binance_spot.json')
+_EXCHANGE = {'ex': None, 'owner': None, 'markets_ts': None}
+
+
+def _markets_cache_path():
+    path = MARKETS_CACHE_FILE
+    if not os.path.isabs(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    return path
+
+
+def _load_markets_disk():
+    """Return (markets, saved_ts) from disk cache or (None, None)."""
+    try:
+        with open(_markets_cache_path(), 'r', encoding='utf-8') as f:
+            blob = json.load(f)
+        markets = blob.get('markets') or None
+        return markets, float(blob.get('ts') or 0)
+    except Exception:
+        return None, None
+
+
+def _save_markets_disk(markets):
+    try:
+        slim = {}
+        for sym, m in (markets or {}).items():
+            if not isinstance(m, dict):
+                continue
+            slim[sym] = {k: v for k, v in m.items() if k != 'info'}
+        path = _markets_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump({'ts': time.time(), 'markets': slim}, f, separators=(',', ':'))
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f"markets cache save failed: {e}")
+
+
+def _ensure_markets(exchange):
+    """Keep exchange.markets populated with at most one network refresh per TTL.
+
+    Never raises: if nothing works, markets stay empty and ccxt lazily loads
+    them inside the first fetch_* call exactly like before (under fetch_with_retry).
+    """
+    now = time.time()
+    ts = _EXCHANGE.get('markets_ts')
+    if exchange.markets:
+        if ts is None:  # loaded lazily by ccxt inside a fetch -> adopt + persist
+            _EXCHANGE['markets_ts'] = now
+            _save_markets_disk(exchange.markets)
+            return
+        if now - ts < MARKETS_TTL_SEC:
+            return
+    else:
+        disk, disk_ts = _load_markets_disk()
+        if disk and disk_ts and now - disk_ts < MARKETS_TTL_SEC:
+            try:
+                exchange.set_markets(disk)
+                _EXCHANGE['markets_ts'] = disk_ts
+                logger.info(f"markets: loaded {len(disk)} from disk cache (age {(now - disk_ts)/3600:.1f}h)")
+                return
+            except Exception as e:
+                logger.warning(f"markets disk cache unusable: {e}")
+    try:
+        markets = exchange.load_markets(reload=True)
+        _EXCHANGE['markets_ts'] = time.time()
+        _save_markets_disk(markets)
+        logger.info(f"markets: refreshed {len(markets)} from exchange (TTL {MARKETS_TTL_SEC/3600:.0f}h)")
+    except Exception as e:
+        if exchange.markets:
+            # keep last good in-memory markets; retry after a short backoff (not every scan)
+            _EXCHANGE['markets_ts'] = now - MARKETS_TTL_SEC + 900
+            logger.warning(f"markets refresh failed, keeping cached: {e}")
+            return
+        disk, disk_ts = _load_markets_disk()
+        if disk:
+            try:
+                exchange.set_markets(disk)
+                _EXCHANGE['markets_ts'] = now - MARKETS_TTL_SEC + 900
+                logger.warning(f"markets refresh failed, using stale disk cache: {e}")
+                return
+            except Exception as e2:
+                logger.warning(f"markets stale disk cache unusable: {e2}")
+        logger.warning(f"markets refresh failed, no cache (ccxt will lazy-load): {e}")
+
+
+def get_binance_spot_exchange():
+    """Reuse one exchange instance across scans (same config as make_binance_spot_exchange).
+
+    If a previous scan thread timed out and is still alive (executor replaced its
+    worker), build a fresh instance for the new thread instead of sharing the
+    session concurrently; markets are copied, so no extra download.
+    """
+    import threading
+    me = threading.current_thread()
+    ex = _EXCHANGE.get('ex')
+    owner = _EXCHANGE.get('owner')
+    if ex is None or (owner is not None and owner is not me and owner.is_alive()):
+        new_ex = make_binance_spot_exchange()
+        if ex is not None and ex.markets:
+            try:
+                new_ex.set_markets(ex.markets, ex.currencies)
+            except Exception:
+                pass
+        else:
+            _EXCHANGE['markets_ts'] = None
+        ex = new_ex
+        _EXCHANGE['ex'] = ex
+    _EXCHANGE['owner'] = me
+    _ensure_markets(ex)
+    return ex
+
+
 def scan_and_trade_v2():
     global _SCAN_SEQ, LAST_SCAN_SNAPSHOT, _LAST_IDLE_FINGERPRINT
     _SCAN_SEQ += 1
@@ -256,7 +378,7 @@ def scan_and_trade_v2():
         )
 
     fee_rate = 0.0004
-    exchange = make_binance_spot_exchange()
+    exchange = get_binance_spot_exchange()
 
     # 1) 更新持仓（观察模式仍正常平仓）
     closed_positions = []
