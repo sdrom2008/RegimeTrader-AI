@@ -50,6 +50,17 @@ _already_running() {
     return 1
 }
 
+# Executor moved to the VPS (regimetrader.service). logs/EXECUTOR_ON_VPS (box-local,
+# created by scripts/pull_vps_logs.sh) blocks box auto-(re)starts so only one
+# instance runs. Override: FORCE_BOX_EXECUTOR=1 ./start.sh dry bg
+if [ -f "$ROOT/logs/EXECUTOR_ON_VPS" ] && [ "${FORCE_BOX_EXECUTOR:-0}" != "1" ]; then
+    case "$MODE" in
+        watchdog|dry|live)
+            echo "ℹ️ Executor runs on the VPS (logs/EXECUTOR_ON_VPS present) — not starting on box. Use scripts/pull_vps_logs.sh"
+            exit 0 ;;
+    esac
+fi
+
 # --- ops commands MUST run even when executor is already up ---
 if [ "$MODE" = "status" ]; then
     "$PYTHON" monitor_v2.py --write
