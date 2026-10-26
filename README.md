@@ -58,16 +58,19 @@ python paper_trader.py
 
 ## ⚙️ 配置说明
 
-### 核心参数（`paper_trader.py` 顶部）
+### 核心参数（`config.py`，方向袖）
 
-| 参数 | 默认值 | 说明 |
+纸面只新开 ETH。慢速袖和套息袖见 `SLEEVES.md`，不在这里开仓。
+
+| 参数 | 当前值 | 说明 |
 |------|--------|------|
-| `LEVERAGE` | 3.0 | 交易杠杆倍数 |
-| `INITIAL_BALANCE` | 10000.0 | 模拟盘初始资金 |
-| `RISK_PER_TRADE_PCT` | 0.05 | 单笔交易风险（总资产百分比）|
-| `SCAN_INTERVAL` | 300 | 扫描间隔（秒）|
-| `SCAN_LIMIT` | 60 | 扫描前 N 个交易对 |
-| `MARKET_CONF_THRESHOLD` | 0.7 | MarketStateAnalyzer 置信度阈值 |
+| `TRADING_SYMBOLS` | ETH/USDT | 只做 ETH |
+| `RISK_PER_TRADE_PCT` | 0.01 | 单笔风险 1% |
+| `LEVERAGE` | 2.0 | 杠杆上限 |
+| `MAX_CONCURRENT_POSITIONS` | 1 | 同时最多 1 仓 |
+| `ADX_STRONG_THRESHOLD` | 35 | 与置信度、DI 一起冻结 |
+| `CONFIDENCE_THRESHOLD` | 0.80 | 不再为攒样本下调 |
+| `SCAN_INTERVAL` | 300 | 扫描间隔（秒） |
 
 ### 环境变量（`.env`）
 

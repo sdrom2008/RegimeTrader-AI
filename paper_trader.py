@@ -434,9 +434,13 @@ def scan_and_trade_v2():
                         pass
                 if exit_price is not None:
                     exit_price = apply_slippage(exit_price, 'BUY', is_buy_action=False, atr=atr)
-                    pnl = (exit_price - entry) * amount
-                    fee = (exit_price * amount) * fee_rate
-                    balance += pos['margin'] + pnl - fee
+                    gross = (exit_price - entry) * amount
+                    exit_fee = (exit_price * amount) * fee_rate
+                    entry_fee_paid = float(pos.get('entry_fee') or 0.0)
+                    fee = exit_fee + entry_fee_paid
+                    pnl = gross - fee
+                    # entry_fee already left cash at open; charge only the exit fee here
+                    balance += pos['margin'] + gross - exit_fee
                     hold_h = None
                     try:
                         et = datetime.datetime.fromisoformat(str(pos.get('entry_time', '')).replace('Z', ''))
@@ -489,9 +493,13 @@ def scan_and_trade_v2():
                         pass
                 if exit_price is not None:
                     exit_price = apply_slippage(exit_price, 'SELL', is_buy_action=True, atr=atr)
-                    pnl = (entry - exit_price) * amount
-                    fee = (exit_price * amount) * fee_rate
-                    balance += pos['margin'] + pnl - fee
+                    gross = (entry - exit_price) * amount
+                    exit_fee = (exit_price * amount) * fee_rate
+                    entry_fee_paid = float(pos.get('entry_fee') or 0.0)
+                    fee = exit_fee + entry_fee_paid
+                    pnl = gross - fee
+                    # entry_fee already left cash at open; charge only the exit fee here
+                    balance += pos['margin'] + gross - exit_fee
                     hold_h = None
                     try:
                         et = datetime.datetime.fromisoformat(str(pos.get('entry_time', '')).replace('Z', ''))
@@ -842,13 +850,25 @@ def scan_and_trade_v2():
                         f"${margin_req:.2f} ({float(MAX_MARGIN_PCT_OF_EQUITY)*100:.0f}% equity / cash cap)"
                     )
 
+                # 开仓费与回测一致：双边都扣。保证金封顶后再留出现金付开仓费。
+                entry_fee = entry_price * amount * fee_rate
+                if margin_req + entry_fee > free_cash and (margin_req + entry_fee) > 0:
+                    scale = free_cash / (margin_req + entry_fee)
+                    amount *= scale
+                    margin_req *= scale
+                    entry_fee *= scale
+                if margin_req + entry_fee > free_cash + 1e-6 or amount <= 0:
+                    logger.info(f"Skip {symbol} {signal}: entry fee does not fit in cash")
+                    continue
+
                 # 开仓
-                balance -= margin_req
+                balance -= margin_req + entry_fee
                 pos = {
                     'type': signal,
                     'entry_price': entry_price,
                     'amount': amount,
                     'margin': margin_req,
+                    'entry_fee': entry_fee,
                     'atr': atr,
                     'sl': sl_price,
                     'tp': tp_price,

@@ -8,8 +8,9 @@ import os
 # 市场与扫描参数
 # ========================
 SCAN_LIMIT = 60                # 每次扫描前N个流动性币种（总池）
-# Lock to train-set symbols (multi_full model). Empty list = scan top SCAN_LIMIT.
-TRADING_SYMBOLS = ['ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT']  # WF ex-BTC PF≈1.27; BTC OOS PF≈0.41 暂踢出纸面
+# Direction sleeve only. 2026-10-26 walk-forward: ETH PF 1.74; BNB 1.10; SOL/XRP < 1.
+# Empty list = scan top SCAN_LIMIT. Do not put alts back to "collect samples".
+TRADING_SYMBOLS = ['ETH/USDT']
 MIN_VOLUME_RANK = 20           # 最小交易量排名（可加）
 LOOK_FORWARD_CANDLES = 24      # 预测未来N根K线（24h）
 QUANTILE_THRESHOLD = 0.6       # 分位数阈值（强趋势定义）
@@ -23,7 +24,7 @@ ADX_STRONG_THRESHOLD = 35      # edge切片：强趋势才开枪
 ADX_WEAK_THRESHOLD = 20        # ADX 震荡阈值
 MIN_DI_DIFF = 15.0             # |+DI - -DI| 最小差（强方向）
 # CONFIDENCE_THRESHOLD = 0.75  # 模型置信度阈值（was 0.70；日更再抬）
-CONFIDENCE_THRESHOLD = 0.80    # 纸面攒样本：0.85→0.80；ADX35/|DI|15 不变
+CONFIDENCE_THRESHOLD = 0.80    # 冻结。放宽到 0.80 后四币 PF 1.27→1.14，不再为攒样本下调
 
 # ========================
 # 信号观察模式（不新开仓，只记 journal 评估准确率）
@@ -45,13 +46,13 @@ ENTRY_ON_CLOSED_1H_ONLY = True
 # 2026-09-10 v3: tighter risk after v2 still ~-98% equity. Old: LEVERAGE=2.5,
 # RISK_PER_TRADE_PCT=0.05, STOP_LOSS_ATR_MULT=2.0, TAKE_PROFIT_RR=2.0
 LEVERAGE = 2.0                 # 纸交易杠杆封顶 2
-RISK_PER_TRADE_PCT = 0.02      # 单枪 2%：打中要有体感，打错可活
+RISK_PER_TRADE_PCT = 0.01      # 方向袖单笔 1%。期望约 0.08R，相关品种不再叠加 2%
 STOP_LOSS_ATR_MULT = 1.5       # 止损：1.5×ATR（was 2.0，收紧无效波动）
 TAKE_PROFIT_RR = 2.5           # 止盈：2.5倍风险（was 2.0，补偿~37%胜率）
 TRAILING_STOP_ATR = 1.5        # 移动止损：1.5×ATR
 TRAIL_ACTIVATE_R = 99.0        # 近似关闭 trail（切片显示关 trail 更赚）；靠 TP/SL/MAX_HOLD
 MAX_MARGIN_PCT_OF_EQUITY = 0.40  # 单仓保证金上限（占权益），避免一笔吃光现金
-MAX_CONCURRENT_POSITIONS = 2   # 同时最多 2 枪，避免手续费稀释
+MAX_CONCURRENT_POSITIONS = 1   # 只做 ETH，同时最多 1 仓
 MAX_HOLD_HOURS = 24            # 最长持仓（小时），超时市价平（对齐预测窗口）
 
 # ========================
@@ -120,11 +121,12 @@ SLIPPAGE_ATR_FRAC = 0.0     # 可选：>0 时再加 atr*frac 不利滑点；0=�
 # ========================
 # STRATEGY_V4 observe-ready 包（文档见 STRATEGY_V4.md）
 # ========================
-# Universe: TRADING_SYMBOLS = ETH/BNB/SOL/XRP（纸面踢 BTC；模型仍 multi_full 五币合训）
+# Direction sleeve: TRADING_SYMBOLS = ETH/USDT only（模型仍 multi_full 五币合训）
+# Slow vol sleeve and funding carry are separate (see SLEEVES.md). They must not open trend orders.
 # Timeframe: 1h K；Scan: SCAN_INTERVAL=300s（5 min）
 # SIGNAL_OBSERVE_MODE=False（真实纸仓；True=仅 journal）
-# Gates: CONFIDENCE_THRESHOLD=0.80, ADX_STRONG_THRESHOLD=35, MIN_DI_DIFF=15, DI 方向一致
-# Risk: RISK_PER_TRADE_PCT=0.02, LEVERAGE=2.0, SL=1.5 ATR, TP RR=2.5,
+# Gates frozen: CONFIDENCE_THRESHOLD=0.80, ADX_STRONG_THRESHOLD=35, MIN_DI_DIFF=15, DI 方向一致
+# Risk: RISK_PER_TRADE_PCT=0.01, LEVERAGE=2.0, SL=1.5 ATR, TP RR=2.5,
 #       TRAILING_STOP_ATR=1.5, TRAIL_ACTIVATE_R=99 (trail≈OFF), MAX_MARGIN_PCT=0.40,
-#       MAX_CONCURRENT_POSITIONS=2, COOLDOWN=6h/bars, MAX_HOLD_HOURS=24
-# Costs: SLIPPAGE_BPS=2.0 (+ optional ATR frac), fee_rate=0.0004 on slipped notional
+#       MAX_CONCURRENT_POSITIONS=1, COOLDOWN=6h/bars, MAX_HOLD_HOURS=24
+# Costs: SLIPPAGE_BPS=2.0 (+ optional ATR frac), fee_rate=0.0004 on slipped notional, both sides
