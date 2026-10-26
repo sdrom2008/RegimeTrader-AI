@@ -182,8 +182,17 @@ def simulate_fold(
     preds: np.ndarray,
     confs: np.ndarray,
     cooldown_bars: int = MIN_BARS_BETWEEN_TRADES,
+    risk_per_trade_pct: float | None = None,
+    sizing: str = "risk",
 ) -> tuple[list[Trade], float, float, int]:
-    """Simulate paper-like trades on one test fold (level mode)."""
+    """Simulate paper-like trades on one test fold (level mode).
+
+    sizing:
+      - "risk" (default): size by risk_amount = equity * risk_pct / SL distance,
+        then cap at max_notional = equity * LEVERAGE. risk_pct defaults to
+        config RISK_PER_TRADE_PCT when risk_per_trade_pct is None.
+      - "full": ignore 1% risk shrink; amount = (equity * LEVERAGE) / entry_price.
+    """
     closes = df["Close"].to_numpy(dtype=float)
     highs = df["High"].to_numpy(dtype=float)
     lows = df["Low"].to_numpy(dtype=float)
@@ -329,13 +338,37 @@ def simulate_fold(
                     tp_price = entry_price - (sl_price - entry_price) * TAKE_PROFIT_RR
                 price_risk = abs(entry_price - sl_price)
                 if price_risk > 0:
-                    risk_amount = equity * RISK_PER_TRADE_PCT
-                    amount = risk_amount / price_risk
                     max_notional = equity * LEVERAGE
-                    if amount * entry_price > max_notional:
-                        amount = max_notional / entry_price
+                    if sizing == "full":
+                        # Full-size research arm: target equity*LEVERAGE notional.
+                        # Shrink so margin_req + entry_fee still fits in balance
+                        # (otherwise fee makes pure max_notional unopenable).
+                        # notional/L + notional*FEE <= balance
+                        denom = (1.0 / LEVERAGE) + FEE_RATE
+                        affordable = (balance / denom) if denom > 0 else 0.0
+                        notional = min(max_notional, affordable)
+                        amount = notional / entry_price if entry_price > 0 else 0.0
+                    else:
+                        risk_pct = (
+                            RISK_PER_TRADE_PCT
+                            if risk_per_trade_pct is None
+                            else float(risk_per_trade_pct)
+                        )
+                        risk_amount = equity * risk_pct
+                        amount = risk_amount / price_risk
+                        if amount * entry_price > max_notional:
+                            amount = max_notional / entry_price
                     margin_req = (amount * entry_price) / LEVERAGE
                     entry_fee = entry_price * amount * FEE_RATE
+                    # Full-size only: float/fee can make pure max_notional
+                    # unopenable; scale down so margin+fee fits. Risk path
+                    # keeps the historical <= balance check unchanged.
+                    if sizing == "full":
+                        cost = margin_req + entry_fee
+                        if cost > balance > 0 and amount > 0:
+                            amount *= (balance / cost) * (1.0 - 1e-12)
+                            margin_req = (amount * entry_price) / LEVERAGE
+                            entry_fee = entry_price * amount * FEE_RATE
                     if margin_req > 0 and amount > 0 and (margin_req + entry_fee) <= balance:
                         balance -= margin_req + entry_fee
                         position = {
