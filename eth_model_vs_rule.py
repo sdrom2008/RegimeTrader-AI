@@ -10,6 +10,7 @@ Writes reports/eth_model_vs_rule.md
 
 from __future__ import annotations
 
+import argparse
 import os
 import time
 from collections import Counter
@@ -22,6 +23,7 @@ from sklearn.metrics import accuracy_score
 from strategy_v2_quantile import label_data_3class_quantile, prepare_features_v2
 from walk_forward_v1 import (
     FEATURE_COLS,
+    MIN_BARS_BETWEEN_TRADES,
     INITIAL_CAPITAL,
     LOOK_FORWARD,
     RF_PARAMS,
@@ -64,6 +66,25 @@ def arm_row(name: str, trades, n_signals: int, fold_dds: list[float]) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="ETH model vs ADX/DI rule walk-forward")
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=None,
+        help="Bars after exit before re-entry (default: MIN_BARS_BETWEEN_TRADES from config)",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default=None,
+        help="Report markdown path (default: reports/eth_model_vs_rule.md)",
+    )
+    args = parser.parse_args()
+    cooldown_bars = MIN_BARS_BETWEEN_TRADES if args.cooldown is None else int(args.cooldown)
+    report_path = args.out or REPORT_PATH
+    if not os.path.isabs(report_path):
+        report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), report_path)
+
     t0 = time.time()
     raw = load_ohlcv("ETH")
     df = prepare_features_v2(raw.copy())
@@ -96,10 +117,10 @@ def main():
         confs = np.array([probs[i, classes.index(preds[i])] for i in range(len(preds))])
         acc = float(accuracy_score(test_df["regime"].astype(int), preds))
 
-        m_trades, m_eq, m_dd, m_sig = simulate_fold("ETH", fid, test_df, preds, confs)
+        m_trades, m_eq, m_dd, m_sig = simulate_fold("ETH", fid, test_df, preds, confs, cooldown_bars=cooldown_bars)
         r_preds = rule_preds(test_df)
         r_confs = np.ones(len(test_df), dtype=float)
-        r_trades, r_eq, r_dd, r_sig = simulate_fold("ETH", fid, test_df, r_preds, r_confs)
+        r_trades, r_eq, r_dd, r_sig = simulate_fold("ETH", fid, test_df, r_preds, r_confs, cooldown_bars=cooldown_bars)
 
         model_trades.extend(m_trades)
         rule_trades.extend(r_trades)
@@ -132,10 +153,16 @@ def main():
         "",
         f"- Generated (UTC): {pd.Timestamp.now('UTC').strftime('%Y-%m-%d %H:%M')}",
         "- Symbol: **ETH/USDT** only. Train 365d / test 90d / step 90d. Each fold resets to $10,000.",
-        "- Same bars, same simulator (`walk_forward_v1.simulate_fold`): SL 1.5×ATR, TP 2.5R, trail@99R, cooldown 6h, max hold 24h, fee 4bps both sides, slippage 2bps.",
+        f"- Same bars, same simulator (`walk_forward_v1.simulate_fold`): SL 1.5×ATR, TP 2.5R, trail@99R, cooldown {cooldown_bars}h, max hold 24h, fee 4bps both sides, slippage 2bps.",
         "- **Model:** retrain RandomForest each fold (120 trees, depth 14). Enter only if ADX≥35, confidence≥0.80, |DI|≥15, and the predicted class agrees with DI.",
         "- **Rule:** no model. Enter when ADX≥35 and |DI|≥15. Long if +DI>−DI, short if −DI>+DI.",
         f"- Runtime: {elapsed:.0f}s",
+        (
+            f"- Note: research cooldown_bars={cooldown_bars}; "
+            f"paper/live default remains MIN_BARS_BETWEEN_TRADES={MIN_BARS_BETWEEN_TRADES} / 6h."
+            if cooldown_bars != MIN_BARS_BETWEEN_TRADES
+            else f"- Cooldown: {cooldown_bars}h (= config MIN_BARS_BETWEEN_TRADES)."
+        ),
         "",
         "## Aggregate",
         "",
@@ -164,10 +191,10 @@ def main():
         "- This is one symbol, reset-capital folds, no funding, and a lighter forest than the deployed pickle.",
         "",
     ]
-    os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
-    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-    print(f"\n[+] {REPORT_PATH}")
+    print(f"\n[+] {report_path}")
     print(
         f"MODEL trades={m_all['n_trades']} WR={m_all['win_rate']*100:.1f}% "
         f"PF={pf_str(m_all['profit_factor'])} pnl=${m_all['total_pnl']:,.0f}"
